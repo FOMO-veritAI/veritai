@@ -366,7 +366,7 @@ def test_leitura_de_pagina_para_ao_passar_do_limite(monkeypatch):
         def __init__(self, **kwargs):
             super().__init__(transport=httpx.MockTransport(responder), **kwargs)
 
-    monkeypatch.setattr(modulo_fontes, "safe_public_url", lambda _url: True)
+    monkeypatch.setattr(modulo_fontes, "resolver_dns", lambda _host: ["93.184.216.34"])
     monkeypatch.setattr(modulo_fontes.httpx, "AsyncClient", ClienteFalso)
     with pytest.raises(ValueError, match="excede"):
         asyncio.run(modulo_fontes.ler_pagina("https://a.com.br/grande"))
@@ -609,3 +609,110 @@ def test_eval_prever_usa_regras_do_servico():
     comparador = ComparadorFixo({"documento:Fonte A": ("entailment", 0.8, 0.9)})
     assert avaliar.prever([item], comparador)[0]["predito"] == "SUPPORTED"
     assert comparador.fontes_recebidas[0].origem == "anexo"
+
+
+# Troca de DNS: o host é resolvido uma única vez e a conexão vai ao IP validado.
+
+PAGINA = "<html><head><title>Parques</title></head><body><article>" + "A prefeitura abriu três parques públicos. " * 5 + "</article></body></html>"
+
+
+def cliente_falso(monkeypatch, responder):
+    pedidos = []
+
+    def registrar(request):
+        pedidos.append(request)
+        return responder(request)
+
+    class ClienteFalso(httpx.AsyncClient):
+        def __init__(self, **kwargs):
+            super().__init__(transport=httpx.MockTransport(registrar), **kwargs)
+
+    monkeypatch.setattr(modulo_fontes.httpx, "AsyncClient", ClienteFalso)
+    return pedidos
+
+
+def test_conexao_usa_o_ip_validado_mesmo_se_o_dns_mudar(monkeypatch):
+    respostas = iter([["93.184.216.34"], ["127.0.0.1"], ["10.0.0.1"]])
+    consultas = []
+
+    def resolver(host):
+        consultas.append(host)
+        return next(respostas)
+
+    monkeypatch.setattr(modulo_fontes, "resolver_dns", resolver)
+    pedidos = cliente_falso(monkeypatch, lambda _r: httpx.Response(200, headers={"content-type": "text/html"}, text=PAGINA))
+    fonte = asyncio.run(modulo_fontes.ler_pagina("https://noticias.exemplo.com.br/materia?id=1"))
+    assert consultas == ["noticias.exemplo.com.br"]
+    pedido_feito = pedidos[0]
+    assert pedido_feito.url.host == "93.184.216.34" and pedido_feito.url.path == "/materia" and pedido_feito.url.query == b"id=1"
+    assert pedido_feito.headers["host"] == "noticias.exemplo.com.br"
+    assert pedido_feito.extensions["sni_hostname"] == "noticias.exemplo.com.br"
+    assert fonte.url == "https://noticias.exemplo.com.br/materia?id=1" and fonte.dominio == "noticias.exemplo.com.br"
+
+
+def test_http_sem_tls_nao_envia_sni(monkeypatch):
+    monkeypatch.setattr(modulo_fontes, "resolver_dns", lambda _host: ["93.184.216.34"])
+    pedidos = cliente_falso(monkeypatch, lambda _r: httpx.Response(200, headers={"content-type": "text/html"}, text=PAGINA))
+    asyncio.run(modulo_fontes.ler_pagina("http://exemplo.com.br/x"))
+    assert "sni_hostname" not in pedidos[0].extensions and pedidos[0].headers["host"] == "exemplo.com.br"
+
+
+@pytest.mark.parametrize(
+    "enderecos",
+    [
+        ["10.0.0.5"],
+        ["127.0.0.1"],
+        ["169.254.169.254"],
+        ["::1"],
+        ["fd00::1"],
+        ["fe80::1%en0"],
+        ["::ffff:10.0.0.1"],
+        ["93.184.216.34", "10.0.0.1"],
+        ["2606:4700::1111", "fd12::1"],
+        [],
+    ],
+)
+def test_host_com_qualquer_endereco_nao_publico_e_recusado(monkeypatch, enderecos):
+    monkeypatch.setattr(modulo_fontes, "resolver_dns", lambda _host: enderecos)
+    pedidos = cliente_falso(monkeypatch, lambda _r: httpx.Response(200, headers={"content-type": "text/html"}, text=PAGINA))
+    with pytest.raises(ValueError, match="não é pública"):
+        asyncio.run(modulo_fontes.ler_pagina("https://exemplo.com.br/x"))
+    assert pedidos == []
+
+
+def test_resolver_publico_ipv6_e_porta(monkeypatch):
+    monkeypatch.setattr(modulo_fontes, "resolver_dns", lambda _host: ["2606:4700::1111"])
+    destino = modulo_fontes.resolver_publico("https://exemplo.com.br:443/a")
+    assert destino.url_conexao == "https://[2606:4700::1111]:443/a" and destino.cabecalho_host == "exemplo.com.br:443"
+
+
+@pytest.mark.parametrize("url", ["ftp://exemplo.com.br/x", "https://exemplo.com.br:8443/x", "https://usuario@exemplo.com.br/x", "https://[invalido/x", "https:///x"])
+def test_urls_recusadas_antes_do_dns(monkeypatch, url):
+    consultas = []
+    monkeypatch.setattr(modulo_fontes, "resolver_dns", lambda host: consultas.append(host) or ["93.184.216.34"])
+    with pytest.raises(ValueError, match="não é pública"):
+        modulo_fontes.resolver_publico(url)
+    assert consultas == []
+
+
+def test_redirecionamento_continua_recusado(monkeypatch):
+    monkeypatch.setattr(modulo_fontes, "resolver_dns", lambda _host: ["93.184.216.34"])
+    cliente_falso(monkeypatch, lambda _r: httpx.Response(302, headers={"location": "http://169.254.169.254/"}))
+    with pytest.raises(ValueError, match="Redirecionamentos"):
+        asyncio.run(modulo_fontes.ler_pagina("https://exemplo.com.br/x"))
+
+
+def test_dominio_com_acento_usa_idna(monkeypatch):
+    monkeypatch.setattr(modulo_fontes, "resolver_dns", lambda _host: ["93.184.216.34"])
+    destino = modulo_fontes.resolver_publico("https://notícias.com.br/x")
+    assert destino.host == "notícias.com.br".encode("idna").decode() == "xn--notcias-9ya.com.br" and destino.cabecalho_host == destino.host
+
+
+def test_url_com_ipv6_literal_usa_colchetes_no_host(monkeypatch):
+    monkeypatch.setattr(modulo_fontes, "resolver_dns", lambda host: [host])
+    destino = modulo_fontes.resolver_publico("https://[2606:4700::1111]/x")
+    assert destino.url_conexao == "https://[2606:4700::1111]/x"
+    assert destino.cabecalho_host == "[2606:4700::1111]"
+    pedidos = cliente_falso(monkeypatch, lambda _r: httpx.Response(200, headers={"content-type": "text/html"}, text=PAGINA))
+    asyncio.run(modulo_fontes.ler_pagina("http://[2606:4700::1111]:80/x"))
+    assert pedidos[0].headers["host"] == "[2606:4700::1111]:80"

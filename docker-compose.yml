@@ -1,0 +1,25 @@
+# VeritAI local: docker compose up --build
+# VERITAI_PERFIL e GOOGLE_FACT_CHECK_API_KEY vêm do ambiente do shell (ou do .env local, que o compose
+# lê só para preencher estas variáveis); nada disso entra na imagem.
+services:
+  veritai:
+    build: .
+    image: veritai:local
+    ports:
+      # Só nesta máquina: a API não tem autenticação. Para expor na rede, troque de propósito (ex.: "8100:8100").
+      - "127.0.0.1:8100:8100"
+    environment:
+      VERITAI_PERFIL: ${VERITAI_PERFIL:-v0}
+      GOOGLE_FACT_CHECK_API_KEY: ${GOOGLE_FACT_CHECK_API_KEY:-}
+    volumes:
+      - hf-cache:/cache       # modelos do Hugging Face (baixados na primeira análise)
+      - veritai-data:/data    # base própria SQLite (VERITAI_BASE=/data/veritai.sqlite3)
+    # Sistema de arquivos só leitura: o processo escreve apenas nos volumes e em /tmp (HOME=/tmp).
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+
+volumes:
+  hf-cache:
+  veritai-data:

@@ -33,7 +33,7 @@ A base é um banco SQLite que guarda documentos rastreáveis (origem, data, trec
   - `0`: carga sem erros;
   - `1`: nada entrou e houve erros;
   - `2`: carga parcial, em que algo entrou mas houve erros. Confira as mensagens `Erro:` antes de tratar o lote como completo.
-- **Risco conhecido na leitura de URLs:** a checagem de URL pública consulta o DNS antes da conexão HTTP. Um domínio que muda de endereço entre a checagem e a conexão poderia apontar para a rede interna. Por isso, importe só URLs da lista curada pelo grupo e rode a carga numa máquina sem acesso a serviços internos sensíveis. A correção, fixar o IP resolvido na conexão, ainda está pendente.
+- **Leitura de URLs:** cada host é resolvido uma única vez. Todos os endereços precisam ser públicos (IPv4 e IPv6), e a conexão vai para o IP já validado. Em HTTPS, o SNI e a verificação do certificado usam o nome original. Assim, um domínio não consegue trocar de endereço entre a checagem e a conexão. Redirecionamentos continuam recusados e proxies do ambiente são ignorados.
 
 ## Vetores por perfil
 

@@ -20,6 +20,9 @@ A VeritAI recomenda e documenta. A decisão de publicar é sempre de um revisor 
 | Base própria em SQLite: documentos, trechos, checagens, busca BM25 + vetorial com RRF | Implementado, ainda sem a carga das fontes do grupo |
 | Fontes independentes por grupo (mesmo domínio ou cópia quase literal) | Implementado |
 | Filtro de evidências pela data da notícia | Implementado |
+| Leitura de URLs com resolução de DNS única (conexão no IP validado, TLS pelo nome original) | Implementado |
+| Imagem de container (Dockerfile, docker-compose) | Implementado, validado localmente em arm64 |
+| Imagem oficial para nuvem (GitHub Actions), Kubernetes e AWS | Planejado |
 | PostgreSQL + pgvector, atualização de documentos na base | Planejado |
 | Modelo treinado V2 (XLM-RoBERTa ajustado) | Planejado, depende de dados rotulados |
 | Porcentagem calibrada | Planejado, depende de treino, teste e calibração |
@@ -54,9 +57,69 @@ Para usar o Google Fact Check, copie `.env.example` para `.env` e preencha a cha
 
 ```bash
 .venv/bin/python -m pytest
+docker build --target teste .        # a mesma suíte com Python 3.12, a versão da imagem
 ```
 
-Os testes usam modelos e busca simulados: rodam em menos de um segundo e não precisam do extra `modelos`.
+Os testes usam modelos e busca simulados: rodam em menos de um segundo e não precisam do extra `modelos`. O estágio `teste` do Dockerfile não entra na imagem final.
+
+## Container
+
+A imagem roda a API na porta 8100, com Python 3.12, torch só-CPU e usuário sem privilégios (uid/gid 10001). Modelos e base ficam fora da imagem, em volumes.
+
+| Caminho ou variável | Para quê |
+|---|---|
+| `/cache` (volume, `HF_HOME`) | Modelos do Hugging Face. São baixados na primeira análise e reaproveitados depois. |
+| `/data` (volume, `VERITAI_BASE=/data/veritai.sqlite3`) | Base própria SQLite. Sem o arquivo, o serviço usa só web e publisher. |
+| `VERITAI_PERFIL` | Perfil de modelos (`v0`, padrão, ou `v1`). |
+| `GOOGLE_FACT_CHECK_API_KEY` | Opcional. Entra só na execução, nunca na imagem. |
+
+**Com Docker Compose (local):**
+
+```bash
+docker compose up -d --build                 # constrói e liga; VERITAI_PERFIL=v1 docker compose up -d para a V1
+docker compose ps                            # estado e health check
+curl http://127.0.0.1:8100/health
+docker compose logs -f veritai               # logs (Ctrl+C para sair)
+docker compose down                          # desliga (os volumes continuam)
+docker compose down -v                       # desliga e apaga os volumes de modelos e base
+```
+
+A porta é publicada só em `127.0.0.1`. A API não tem autenticação, e qualquer cliente que a alcance pode disparar inferência e buscas externas, então não exponha a porta na rede sem uma camada de autenticação na frente.
+
+O compose lê `VERITAI_PERFIL` e `GOOGLE_FACT_CHECK_API_KEY` do shell ou do `.env` local só para preencher as variáveis do container. O `.env` não é copiado para a imagem: ele está no `.dockerignore`, e o Dockerfile copia só `pyproject.toml`, `README.md` e `veritai/`. O container roda com sistema de arquivos só leitura e escreve apenas nos volumes e em `/tmp`.
+
+**Só com Docker:**
+
+```bash
+docker build -t veritai:local .
+docker run -d --name veritai -p 127.0.0.1:8100:8100 \
+  -e VERITAI_PERFIL=v0 \
+  -v veritai-hf-cache:/cache -v veritai-data:/data \
+  --read-only --tmpfs /tmp \
+  veritai:local
+docker stop veritai && docker rm veritai
+```
+
+**Linha de comando da base dentro do container:**
+
+```bash
+docker compose run --rm -v "$PWD/documentos:/entrada:ro" veritai python -m veritai.base importar-textos /entrada/relatorio.txt --data 2026-03-01
+docker compose run --rm veritai python -m veritai.base indexar --perfil v0
+docker compose run --rm veritai python -m veritai.base estatisticas
+docker compose restart veritai               # a API passa a usar a base (e exige vetores do perfil em uso)
+```
+
+**Modelos dentro da imagem (opcional):** `docker build --build-arg PERFIL_EMBUTIDO=v1 -t veritai:v1 .` baixa os modelos do perfil para `/cache` durante o build. Isso serve para rodar sem volume de cache, por exemplo no Kubernetes. Atenção:
+- um volume nomeado vazio montado em `/cache` recebe uma cópia desses modelos;
+- um *bind mount* (pasta do host) esconde os modelos embutidos.
+
+**Arquitetura:** o build local gera a imagem para a arquitetura da máquina; aqui foi validado em `linux/arm64`. Para máquinas x86:
+
+```bash
+docker buildx build --platform linux/amd64 -t veritai:amd64 --load .
+```
+
+Em um Mac ARM, esse build é lento porque roda por emulação. A imagem oficial para a nuvem será construída depois no GitHub Actions. A AWS também oferece instâncias ARM (Graviton), que usam a imagem arm64.
 
 ## Avaliação
 

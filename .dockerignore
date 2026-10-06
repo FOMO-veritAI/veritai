@@ -1,0 +1,39 @@
+# Segredos e ambientes locais
+.env
+.env.*
+.venv/
+venv/
+
+# Dados, modelos, bancos e resultados locais
+data/
+models/
+mlruns/
+*.sqlite3
+*.sqlite3-*
+*.safetensors
+*.bin
+
+# Git, canvas e configurações de agentes
+.git/
+.gitignore
+.maestri/
+.claude/
+
+# Caches e artefatos de build
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.ipynb_checkpoints/
+.DS_Store
+
+# eval: só o script e o conjunto de contraste (usados no estágio de teste); predições locais ficam fora
+eval/*
+!eval/avaliar.py
+!eval/contraste.jsonl
+
+# Arquivos do próprio container
+docker-compose.yml
+.dockerignore

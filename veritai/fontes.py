@@ -44,17 +44,62 @@ def dominio_da_fonte(url: str, nome: str) -> str:
     return urlparse(url).hostname or f"documento:{nome}"
 
 
-def safe_public_url(url: str) -> bool:
-    parsed = urlparse(url)
-    if parsed.scheme not in {"https", "http"} or not parsed.hostname:
-        return False
-    if parsed.username or parsed.password or parsed.port not in {None, 80, 443}:
-        return False
+@dataclass(frozen=True)
+class Destino:
+    """Endereço já validado de uma URL: a conexão vai para o IP, e Host e TLS usam o nome original."""
+
+    host: str  # nome do host em ASCII (IDNA), usado no SNI e na verificação do certificado
+    ip: str
+    url_conexao: str  # URL com o IP no lugar do nome
+    cabecalho_host: str
+
+
+def resolver_dns(host: str) -> list[str]:
+    return [entrada[4][0] for entrada in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)]
+
+
+def endereco_publico(endereco: str) -> bool:
+    ip = ipaddress.ip_address(endereco.split("%")[0])
+    # IPv4 escrito como IPv6 (::ffff:10.0.0.1) vale pelo endereço IPv4.
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return ip.is_global and not ip.is_multicast
+
+
+def resolver_publico(url: str) -> Destino:
+    """Resolve o host uma única vez e exige que todos os endereços sejam públicos.
+
+    A conexão usa o IP devolvido aqui, para que o domínio não possa trocar de endereço
+    entre a checagem e a conexão.
+    """
+    recusada = ValueError("URL não é pública ou não pôde ser resolvida.")
     try:
-        addresses = socket.getaddrinfo(parsed.hostname, None)
-        return bool(addresses) and all(ipaddress.ip_address(entry[4][0]).is_global for entry in addresses)
-    except (socket.gaierror, ValueError):
-        return False
+        parsed = urlparse(url)
+        porta = parsed.port
+        host = (parsed.hostname or "").encode("idna").decode("ascii")
+    except (ValueError, UnicodeError):
+        raise recusada from None
+    if parsed.scheme not in {"https", "http"} or not host or parsed.username or parsed.password or porta not in {None, 80, 443}:
+        raise recusada
+    try:
+        enderecos = list(dict.fromkeys(resolver_dns(host)))
+        if not enderecos or not all(endereco_publico(endereco) for endereco in enderecos):
+            raise recusada
+    except (OSError, ValueError, UnicodeError):
+        raise recusada from None
+    ip = enderecos[0].split("%")[0]
+    sufixo_porta = f":{porta}" if porta else ""
+    return Destino(
+        host=host,
+        ip=ip,
+        url_conexao=parsed._replace(netloc=entre_colchetes(ip) + sufixo_porta).geturl(),
+        # Uma URL com IPv6 literal também precisa de colchetes no Host.
+        cabecalho_host=entre_colchetes(host) + sufixo_porta,
+    )
+
+
+def entre_colchetes(host: str) -> str:
+    return f"[{host}]" if ":" in host else host
 
 
 async def ler_limitado(response: httpx.Response) -> bytes:
@@ -70,10 +115,12 @@ async def ler_limitado(response: httpx.Response) -> bytes:
 
 
 async def ler_pagina(url: str, origem: str = "busca_web") -> Fonte:
-    if not await asyncio.to_thread(safe_public_url, url):
-        raise ValueError("URL não é pública ou não pôde ser resolvida.")
-    async with httpx.AsyncClient(timeout=12, follow_redirects=False, headers=CABECALHOS) as client:
-        async with client.stream("GET", url) as response:
+    destino = await asyncio.to_thread(resolver_publico, url)
+    # Conecta no IP validado; em HTTPS, o SNI e a verificação do certificado usam o nome original.
+    extensoes = {"sni_hostname": destino.host} if urlparse(url).scheme == "https" else {}
+    # trust_env=False: nenhum proxy do ambiente resolve o nome de novo por conta própria.
+    async with httpx.AsyncClient(timeout=12, follow_redirects=False, headers=CABECALHOS, trust_env=False) as client:
+        async with client.stream("GET", destino.url_conexao, headers={"Host": destino.cabecalho_host}, extensions=extensoes) as response:
             if response.is_redirect:
                 raise ValueError("Redirecionamentos não são aceitos para fontes fornecidas.")
             response.raise_for_status()
