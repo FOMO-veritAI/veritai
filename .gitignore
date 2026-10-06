@@ -23,3 +23,6 @@ mlruns/
 
 # Sistema
 .DS_Store
+
+# Canvas local do Maestri
+.maestri/

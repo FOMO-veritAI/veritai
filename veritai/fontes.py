@@ -6,6 +6,7 @@ pela comparação entre a afirmação e os trechos lidos.
 
 import asyncio
 import ipaddress
+import json
 import re
 import socket
 from dataclasses import dataclass
@@ -16,9 +17,12 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .config import GOOGLE_FACT_CHECK_API_KEY
+from .relatorio import ChecagemAnterior
 
 
 USER_AGENT = "VeritAI/0.1 (local research prototype)"
+# Sem compressão, cada bloco lido da rede tem o tamanho que chegou, sem expansão na descompressão.
+CABECALHOS = {"User-Agent": USER_AGENT, "Accept-Encoding": "identity"}
 MAX_BYTES = 1_500_000
 
 
@@ -45,19 +49,30 @@ def safe_public_url(url: str) -> bool:
         return False
 
 
+async def ler_limitado(response: httpx.Response) -> bytes:
+    # Lê em partes e para assim que passar do limite, sem carregar a resposta inteira na memória.
+    if int(response.headers.get("content-length") or 0) > MAX_BYTES:
+        raise ValueError("A resposta excede o tamanho permitido.")
+    corpo = bytearray()
+    async for parte in response.aiter_bytes(chunk_size=65_536):
+        if len(corpo) + len(parte) > MAX_BYTES:
+            raise ValueError("A resposta excede o tamanho permitido.")
+        corpo.extend(parte)
+    return bytes(corpo)
+
+
 async def ler_pagina(url: str, origem: str = "busca_web") -> Fonte:
     if not await asyncio.to_thread(safe_public_url, url):
         raise ValueError("URL não é pública ou não pôde ser resolvida.")
-    async with httpx.AsyncClient(timeout=12, follow_redirects=False, headers={"User-Agent": USER_AGENT}) as client:
-        response = await client.get(url)
-        if response.is_redirect:
-            raise ValueError("Redirecionamentos não são aceitos para fontes fornecidas.")
-        response.raise_for_status()
-        if len(response.content) > MAX_BYTES:
-            raise ValueError("A fonte excede o tamanho permitido.")
-        if "text/html" not in response.headers.get("content-type", ""):
-            raise ValueError("A fonte precisa ser uma página HTML pública.")
-    soup = BeautifulSoup(response.text, "html.parser")
+    async with httpx.AsyncClient(timeout=12, follow_redirects=False, headers=CABECALHOS) as client:
+        async with client.stream("GET", url) as response:
+            if response.is_redirect:
+                raise ValueError("Redirecionamentos não são aceitos para fontes fornecidas.")
+            response.raise_for_status()
+            if "text/html" not in response.headers.get("content-type", ""):
+                raise ValueError("A fonte precisa ser uma página HTML pública.")
+            html = (await ler_limitado(response)).decode(response.encoding or "utf-8", errors="replace")
+    soup = BeautifulSoup(html, "html.parser")
     titulo = soup.title.get_text(" ", strip=True) if soup.title else urlparse(url).hostname or url
     data = None
     meta = soup.find("meta", attrs={"property": "article:published_time"})
@@ -81,18 +96,19 @@ def termos_de_busca(afirmacao: str) -> str:
 
 async def gdelt_urls(afirmacao: str) -> list[str]:
     params = {"query": termos_de_busca(afirmacao), "mode": "artlist", "format": "json", "maxrecords": "8", "timespan": "3months"}
-    async with httpx.AsyncClient(timeout=15, headers={"User-Agent": USER_AGENT}) as client:
-        response = await client.get("https://api.gdeltproject.org/api/v2/doc/doc", params=params)
-        response.raise_for_status()
-        data = response.json()
+    async with httpx.AsyncClient(timeout=15, headers=CABECALHOS) as client:
+        async with client.stream("GET", "https://api.gdeltproject.org/api/v2/doc/doc", params=params) as response:
+            response.raise_for_status()
+            data = json.loads(await ler_limitado(response))
     return [item["url"] for item in data.get("articles", []) if item.get("url")]
 
 
 async def bing_news_urls(afirmacao: str) -> list[str]:
-    async with httpx.AsyncClient(timeout=12, headers={"User-Agent": USER_AGENT}) as client:
-        response = await client.get("https://www.bing.com/news/search", params={"q": termos_de_busca(afirmacao), "format": "rss", "mkt": "pt-BR"})
-        response.raise_for_status()
-        root = ElementTree.fromstring(response.content)
+    params = {"q": termos_de_busca(afirmacao), "format": "rss", "mkt": "pt-BR"}
+    async with httpx.AsyncClient(timeout=12, headers=CABECALHOS) as client:
+        async with client.stream("GET", "https://www.bing.com/news/search", params=params) as response:
+            response.raise_for_status()
+            root = ElementTree.fromstring(await ler_limitado(response))
     urls = []
     for item in root.findall("./channel/item")[:8]:
         link = item.findtext("link") or ""
@@ -103,32 +119,53 @@ async def bing_news_urls(afirmacao: str) -> list[str]:
     return urls
 
 
-async def google_fact_check_urls(afirmacao: str) -> list[str]:
+def checagens_do_google(data: dict) -> list[ChecagemAnterior]:
+    checagens: dict[tuple[str, str], ChecagemAnterior] = {}
+    for claim in data.get("claims", []):
+        for review in claim.get("claimReview", []):
+            url = str(review.get("url") or "")
+            chave = (url, str(claim.get("text") or ""))
+            if not url.startswith(("https://", "http://")) or chave in checagens:
+                continue
+            publisher = review.get("publisher") or {}
+            checagens[chave] = ChecagemAnterior(
+                agencia=str(publisher.get("name") or publisher.get("site") or urlparse(url).hostname or ""),
+                data=str(review["reviewDate"])[:10] if review.get("reviewDate") else None,
+                url=url,
+                alegacao_checada=str(claim.get("text") or ""),
+                veredito=str(review.get("textualRating") or ""),
+            )
+    return list(checagens.values())
+
+
+async def google_fact_check(afirmacao: str) -> list[ChecagemAnterior]:
+    # Usa só os dados estruturados da API; a página da checagem não vira evidência.
     if not GOOGLE_FACT_CHECK_API_KEY:
         return []
     params = {"query": termos_de_busca(afirmacao), "languageCode": "pt", "pageSize": 5, "key": GOOGLE_FACT_CHECK_API_KEY}
-    async with httpx.AsyncClient(timeout=12, headers={"User-Agent": USER_AGENT}) as client:
-        response = await client.get("https://factchecktools.googleapis.com/v1alpha1/claims:search", params=params)
-        response.raise_for_status()
-        data = response.json()
-    return [review["url"] for claim in data.get("claims", []) for review in claim.get("claimReview", []) if review.get("url")]
+    async with httpx.AsyncClient(timeout=12, headers=CABECALHOS) as client:
+        async with client.stream("GET", "https://factchecktools.googleapis.com/v1alpha1/claims:search", params=params) as response:
+            response.raise_for_status()
+            data = json.loads(await ler_limitado(response))
+    return checagens_do_google(data)
 
 
-async def buscar_fontes(afirmacao: str) -> tuple[list[Fonte], list[str]]:
-    urls: list[tuple[str, str]] = []
+async def buscar_fontes(afirmacao: str) -> tuple[list[Fonte], list[str], list[ChecagemAnterior]]:
+    urls: list[str] = []
     erros: list[str] = []
-    for rotulo, origem, finder in (
-        ("Bing News", "busca_web", bing_news_urls),
-        ("GDELT", "busca_web", gdelt_urls),
-        ("Google Fact Check", "checagem_externa", google_fact_check_urls),
-    ):
+    for rotulo, finder in (("Bing News", bing_news_urls), ("GDELT", gdelt_urls)):
         try:
-            urls.extend((url, origem) for url in await finder(afirmacao))
+            urls.extend(await finder(afirmacao))
         except Exception as exc:
             erros.append(f"{rotulo}: {type(exc).__name__}")
+    checagens: list[ChecagemAnterior] = []
+    try:
+        checagens = await google_fact_check(afirmacao)
+    except Exception as exc:
+        erros.append(f"Google Fact Check: {type(exc).__name__}")
     unicos = list(dict.fromkeys(urls))[:10]
-    paginas = await asyncio.gather(*(ler_pagina(url, origem) for url, origem in unicos), return_exceptions=True)
+    paginas = await asyncio.gather(*(ler_pagina(url) for url in unicos), return_exceptions=True)
     fontes = [pagina for pagina in paginas if isinstance(pagina, Fonte)]
-    if unicos and not fontes:
-        erros.append("Os resultados foram encontrados, mas as páginas não puderam ser lidas.")
-    return fontes, erros
+    if falhas := len(unicos) - len(fontes):
+        erros.append(f'Afirmação "{afirmacao[:80]}": {falhas} de {len(unicos)} página(s) encontrada(s) não puderam ser lidas.')
+    return fontes, erros, checagens

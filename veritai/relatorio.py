@@ -1,8 +1,11 @@
 """Contrato de entrada e saída da VeritAI (relatório por afirmação)."""
 
-from typing import Literal
+import ipaddress
+import re
+from typing import Annotated, Literal
+from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 
 
 Resultado = Literal["SUPPORTED", "REFUTED", "NOT_ENOUGH_EVIDENCE", "CONFLICTING_EVIDENCE"]
@@ -18,12 +21,43 @@ TEXTO_PUBLICO: dict[str, str] = {
 }
 
 
+def host_valido(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    try:
+        ascii_host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return False
+    rotulos = ascii_host.removesuffix(".").split(".")
+    return len(ascii_host) <= 253 and all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", rotulo, re.IGNORECASE) for rotulo in rotulos)
+
+
 class EvidenciaFornecida(BaseModel):
     titulo: str = Field(min_length=1, max_length=300)
     texto: str = Field(min_length=1, max_length=40000)
-    url: str = ""
+    url: str = Field(default="", max_length=2048)
     origem: Literal["link_publisher", "anexo"] = "anexo"
     data_publicacao: str | None = None
+
+    @field_validator("url")
+    @classmethod
+    def url_valida(cls, url: str) -> str:
+        url = url.strip()
+        if not url:
+            return url
+        if any(caractere.isspace() for caractere in url):
+            raise ValueError("A URL não pode conter espaços.")
+        try:
+            partes = urlparse(url)
+            hostname, _ = partes.hostname, partes.port
+        except ValueError as exc:
+            raise ValueError("URL inválida.") from exc
+        if partes.scheme not in {"https", "http"} or not hostname or not host_valido(hostname):
+            raise ValueError("A URL precisa começar com http:// ou https:// e ter um domínio.")
+        return url
 
 
 class Noticia(BaseModel):
@@ -34,7 +68,7 @@ class Noticia(BaseModel):
 
 class PedidoAnalise(BaseModel):
     noticia: Noticia
-    afirmacoes: list[str] = Field(min_length=1, max_length=10)
+    afirmacoes: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=10, max_length=500)]] = Field(min_length=1, max_length=10)
     evidencias: list[EvidenciaFornecida] = Field(default_factory=list, max_length=20)
     anexos_sem_texto: int = Field(default=0, ge=0, le=20)
     buscar_na_web: bool = True
@@ -71,6 +105,13 @@ class RelatorioAfirmacao(BaseModel):
     checagens_anteriores: list[ChecagemAnterior]
     justificativa: str
     limitacoes: list[str]
+
+    @model_validator(mode="after")
+    def avaliavel_exige_porcentagem(self):
+        # Trava: nenhum resultado é marcado como avaliável sem uma porcentagem calibrada.
+        if self.avaliavel and self.porcentagem is None:
+            raise ValueError("avaliavel só pode ser true quando existe porcentagem.")
+        return self
 
 
 class RelatorioAnalise(BaseModel):

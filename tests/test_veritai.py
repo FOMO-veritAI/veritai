@@ -1,10 +1,21 @@
 """Testes do pipeline e do contrato da API, com modelos e busca simulados."""
 
-from fastapi.testclient import TestClient
+import asyncio
+import shutil
+import subprocess
+from pathlib import Path
 
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+
+from veritai import fontes as modulo_fontes
+from veritai import pipeline as modulo_pipeline
 from veritai.api import criar_app
 from veritai.fontes import Fonte
-from veritai.modelos import TrechoAvaliado
+from veritai.modelos import TrechoAvaliado, candidatos, dividir_em_trechos
+from veritai.relatorio import ChecagemAnterior, RelatorioAfirmacao
 
 
 def fonte(dominio: str, origem: str = "busca_web") -> Fonte:
@@ -28,9 +39,9 @@ class ComparadorFixo:
         return itens
 
 
-def buscador_com(*fontes: Fonte, erros: list[str] | None = None):
+def buscador_com(*fontes: Fonte, erros: list[str] | None = None, checagens: list[ChecagemAnterior] | None = None):
     async def buscar(_afirmacao):
-        return list(fontes), list(erros or [])
+        return list(fontes), list(erros or []), list(checagens or [])
 
     return buscar
 
@@ -99,7 +110,7 @@ def test_evidencia_do_publisher_entra_sem_busca_web():
 
     async def buscador(afirmacao):
         buscador_chamado.append(afirmacao)
-        return [], []
+        return [], [], []
 
     item = analisar(comparador, buscador, corpo)["afirmacoes"][0]
     assert buscador_chamado == []
@@ -148,3 +159,243 @@ def test_health():
     corpo = client.get("/health").json()
     assert corpo["status"] == "ok"
     assert corpo["versoes"]["config"]
+
+
+# Lote de correções da revisão.
+
+
+def test_checagens_do_google_usam_dados_estruturados():
+    data = {
+        "claims": [
+            {
+                "text": "A cidade abriu três parques.",
+                "claimReview": [
+                    {
+                        "publisher": {"name": "Agência Lupa", "site": "lupa.uol.com.br"},
+                        "url": "https://lupa.uol.com.br/checagem",
+                        "textualRating": "Falso",
+                        "reviewDate": "2026-09-01T10:00:00Z",
+                    },
+                    {"publisher": {"name": "Sem URL"}, "textualRating": "Falso"},
+                ],
+            },
+            {
+                "text": "Outra alegação na mesma página.",
+                "claimReview": [{"publisher": {"name": "Agência Lupa"}, "url": "https://lupa.uol.com.br/checagem", "textualRating": "Verdadeiro"}],
+            },
+        ]
+    }
+    assert modulo_fontes.checagens_do_google(data) == [
+        ChecagemAnterior(
+            agencia="Agência Lupa",
+            data="2026-09-01",
+            url="https://lupa.uol.com.br/checagem",
+            alegacao_checada="A cidade abriu três parques.",
+            veredito="Falso",
+        ),
+        ChecagemAnterior(
+            agencia="Agência Lupa",
+            data=None,
+            url="https://lupa.uol.com.br/checagem",
+            alegacao_checada="Outra alegação na mesma página.",
+            veredito="Verdadeiro",
+        ),
+    ]
+
+
+def test_paginas_de_checagem_nao_viram_evidencia(monkeypatch):
+    checagem = ChecagemAnterior(agencia="Aos Fatos", data=None, url="https://aosfatos.org/c", alegacao_checada="x", veredito="Falso")
+    lidas = []
+
+    async def sem_urls(_afirmacao):
+        return []
+
+    async def google(_afirmacao):
+        return [checagem]
+
+    async def ler(url, origem="busca_web"):
+        lidas.append(url)
+        raise ValueError("não deveria ler")
+
+    monkeypatch.setattr(modulo_fontes, "bing_news_urls", sem_urls)
+    monkeypatch.setattr(modulo_fontes, "gdelt_urls", sem_urls)
+    monkeypatch.setattr(modulo_fontes, "google_fact_check", google)
+    monkeypatch.setattr(modulo_fontes, "ler_pagina", ler)
+    encontradas, erros, checagens = asyncio.run(modulo_fontes.buscar_fontes("A cidade abriu três parques."))
+    assert (encontradas, erros, checagens, lidas) == ([], [], [checagem], [])
+
+
+def test_checagens_anteriores_aparecem_mas_nao_definem_resultado():
+    checagem = ChecagemAnterior(
+        agencia="Aos Fatos", data="2026-09-01", url="https://aosfatos.org/c", alegacao_checada="A cidade abriu três parques públicos.", veredito="Falso"
+    )
+    comparador = ComparadorFixo({})
+    item = analisar(comparador, buscador_com(checagens=[checagem]))["afirmacoes"][0]
+    assert item["resultado"] == "NOT_ENOUGH_EVIDENCE"
+    assert item["checagens_anteriores"] == [checagem.model_dump()]
+    assert comparador.fontes_recebidas == []
+    assert any("não confirma se tratam da mesma alegação, contexto e período" in texto for texto in item["limitacoes"])
+
+
+def test_sem_checagens_nao_ha_aviso_de_equivalencia():
+    item = analisar(ComparadorFixo({}), buscador_com())["afirmacoes"][0]
+    assert item["checagens_anteriores"] == []
+    assert not any("Google Fact Check" in texto for texto in item["limitacoes"])
+
+
+def test_dividir_em_trechos_preserva_evidencia_curta_do_publisher():
+    assert dividir_em_trechos("Três parques foram abertos.") == []
+    assert dividir_em_trechos("Três parques foram abertos.", fornecido=True) == ["Três parques foram abertos."]
+    longa = "a" * 1500
+    assert dividir_em_trechos(longa) == []
+    assert "".join(dividir_em_trechos(longa, fornecido=True)) == longa
+
+
+def test_texto_do_publisher_com_muitas_frases_nao_perde_nenhuma():
+    texto = " ".join(f"Frase número {i} do relatório." for i in range(400))
+    partes = dividir_em_trechos(texto, fornecido=True)
+    assert " ".join(partes) == texto
+    assert all(len(parte) <= 650 for parte in partes)
+    assert "Frase número 399 do relatório." in partes[-1]
+
+
+def test_candidatos_usam_divisao_real_por_origem():
+    texto = "Três parques foram abertos. Menu."
+    web = Fonte(url="https://a.com.br/x", titulo="Web", dominio="a.com.br", texto=texto, origem="busca_web")
+    anexo = Fonte(url="", titulo="Relatório", dominio="documento:Relatório", texto=texto, origem="anexo")
+    assert candidatos([web, anexo]) == [(anexo, "Três parques foram abertos. Menu.")]
+
+
+def test_falhas_parciais_de_leitura_viram_aviso(monkeypatch):
+    async def urls(_afirmacao):
+        return ["https://a.com.br/1", "https://b.com.br/2", "https://c.com.br/3"]
+
+    async def nada(_afirmacao):
+        return []
+
+    async def ler(url, origem="busca_web"):
+        if url.endswith("/1"):
+            return Fonte(url=url, titulo="A", dominio="a.com.br", texto="texto " * 30, origem=origem)
+        raise ValueError("falhou")
+
+    monkeypatch.setattr(modulo_fontes, "bing_news_urls", urls)
+    monkeypatch.setattr(modulo_fontes, "gdelt_urls", nada)
+    monkeypatch.setattr(modulo_fontes, "google_fact_check", nada)
+    monkeypatch.setattr(modulo_fontes, "ler_pagina", ler)
+    encontradas, erros, _ = asyncio.run(modulo_fontes.buscar_fontes("A cidade abriu três parques."))
+    assert len(encontradas) == 1
+    assert any("2 de 3 página(s)" in erro for erro in erros)
+
+
+@pytest.mark.parametrize("afirmacao", ["Curta.", " " * 20, "x" * 501])
+def test_afirmacao_fora_dos_limites_e_rejeitada(afirmacao):
+    client = TestClient(criar_app(ComparadorFixo({}), buscador_com()))
+    assert client.post("/analisar", json=pedido(afirmacoes=[afirmacao])).status_code == 422
+
+
+@pytest.mark.parametrize("afirmacao", ["x" * 10, "x" * 500, "  " + "x" * 10 + "  "])
+def test_afirmacao_nos_limites_e_aceita(afirmacao):
+    relatorio = analisar(ComparadorFixo({}), buscador_com(), pedido(afirmacoes=[afirmacao]))
+    assert relatorio["afirmacoes"][0]["afirmacao"] == afirmacao.strip()
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://[invalido", "ftp://a.com.br/x", "a.com.br/x", "https://", "https://exa mple.com/x", "https://exa_mple.com/x", "https://-a.com.br/x"],
+)
+def test_url_de_evidencia_invalida_gera_422(url):
+    client = TestClient(criar_app(ComparadorFixo({}), buscador_com()))
+    corpo = pedido(buscar_na_web=False, evidencias=[{"titulo": "Doc", "texto": "Texto.", "url": url}])
+    assert client.post("/analisar", json=corpo).status_code == 422
+
+
+@pytest.mark.parametrize("url", ["", "https://a.com.br/x", "http://münchen.de/x", "https://192.0.2.1/x"])
+def test_url_de_evidencia_valida_e_aceita(url):
+    corpo = pedido(buscar_na_web=False, evidencias=[{"titulo": "Doc", "texto": "Texto.", "url": url}])
+    analisar(ComparadorFixo({}), buscador_com(), corpo)
+
+
+def test_so_anexo_sem_texto_depende_de_trechos_comparaveis():
+    corpo = pedido(anexos_sem_texto=1)
+    com_texto = Fonte(
+        url="https://a.gov.br/m", titulo="M", dominio="a.gov.br", origem="busca_web",
+        texto="A prefeitura informou que inaugurou novos espaços de lazer no centro da cidade.",
+    )
+    item = analisar(ComparadorFixo({}), buscador_com(com_texto), corpo)["afirmacoes"][0]
+    assert item["motivo_nao_avaliavel"] == "evidencia_insuficiente"
+    # Página com texto, mas sem nenhum trecho que o comparador real aproveite.
+    item = analisar(ComparadorFixo({}), buscador_com(fonte("a.gov.br")), corpo)["afirmacoes"][0]
+    assert item["motivo_nao_avaliavel"] == "so_anexo_sem_texto"
+
+
+def test_avaliavel_exige_porcentagem(monkeypatch):
+    monkeypatch.setitem(modulo_pipeline.CONFIG, "calibrado", True)
+    comparador = ComparadorFixo({"a.gov.br": ("entailment", 0.8, 0.9)})
+    item = analisar(comparador, buscador_com(fonte("a.gov.br")))["afirmacoes"][0]
+    assert item["resultado"] == "SUPPORTED"
+    assert item["porcentagem"] is None and item["avaliavel"] is False
+    # Sem porcentagem calculada, o único motivo disponível no contrato atual continua sendo este.
+    assert item["motivo_nao_avaliavel"] == "modelo_nao_calibrado"
+    with pytest.raises(ValidationError):
+        RelatorioAfirmacao(
+            afirmacao="x", resultado="SUPPORTED", texto_publico="x", avaliavel=True, porcentagem=None,
+            motivo_nao_avaliavel=None, fontes_independentes=1, evidencias=[], checagens_anteriores=[],
+            justificativa="x", limitacoes=[],
+        )
+
+
+def test_leitura_de_pagina_para_ao_passar_do_limite(monkeypatch):
+    partes_lidas = []
+
+    async def corpo_grande():
+        for _ in range(100):
+            partes_lidas.append(1)
+            yield b"a" * 100_000
+
+    def responder(_request):
+        return httpx.Response(200, headers={"content-type": "text/html"}, content=corpo_grande())
+
+    class ClienteFalso(httpx.AsyncClient):
+        def __init__(self, **kwargs):
+            super().__init__(transport=httpx.MockTransport(responder), **kwargs)
+
+    monkeypatch.setattr(modulo_fontes, "safe_public_url", lambda _url: True)
+    monkeypatch.setattr(modulo_fontes.httpx, "AsyncClient", ClienteFalso)
+    with pytest.raises(ValueError, match="excede"):
+        asyncio.run(modulo_fontes.ler_pagina("https://a.com.br/grande"))
+    assert len(partes_lidas) <= 17
+
+
+class RespostaFalsa:
+    def __init__(self, blocos, headers=None):
+        self.blocos, self.headers, self.tamanhos = blocos, headers or {}, []
+
+    async def aiter_bytes(self, chunk_size=None):
+        for bloco in self.blocos:
+            self.tamanhos.append(chunk_size)
+            yield bloco
+
+
+def test_bloco_unico_grande_e_recusado_e_leitura_usa_blocos_pequenos():
+    resposta = RespostaFalsa([b"a" * 1000, b"a" * 2_000_000])
+    with pytest.raises(ValueError, match="excede"):
+        asyncio.run(modulo_fontes.ler_limitado(resposta))
+    assert resposta.tamanhos == [65_536, 65_536]
+
+
+def test_content_length_grande_e_recusado_sem_ler_corpo():
+    resposta = RespostaFalsa([b"a"], headers={"content-length": "2000000"})
+    with pytest.raises(ValueError, match="excede"):
+        asyncio.run(modulo_fontes.ler_limitado(resposta))
+    assert resposta.tamanhos == []
+
+
+def test_requisicoes_pedem_resposta_sem_compressao():
+    assert modulo_fontes.CABECALHOS["Accept-Encoding"] == "identity"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git não instalado")
+def test_maestri_fica_fora_do_git():
+    raiz = Path(__file__).resolve().parents[1]
+    resultado = subprocess.run(["git", "check-ignore", "-q", "--no-index", ".maestri/qualquer.txt"], cwd=raiz)
+    assert resultado.returncode == 0

@@ -26,9 +26,34 @@ class Comparador(Protocol):
     def comparar(self, afirmacao: str, fontes: list[Fonte]) -> list[TrechoAvaliado]: ...
 
 
-def dividir_em_trechos(texto: str) -> list[str]:
-    frases = re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", texto))
-    return [frase.strip()[:650] for frase in frases if 45 <= len(frase.strip()) <= 800][:120]
+ORIGENS_FORNECIDAS = {"link_publisher", "anexo"}
+
+
+def dividir_em_trechos(texto: str, fornecido: bool = False) -> list[str]:
+    frases = [frase.strip() for frase in re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", texto)) if frase.strip()]
+    if not fornecido:
+        # Em páginas da web, frases muito curtas ou longas costumam ser menus, legendas ou blocos sem pontuação.
+        return [frase[:650] for frase in frases if 45 <= len(frase) <= 800][:120]
+    # Texto enviado pelo publisher nunca é descartado: frases curtas são agrupadas e longas, divididas,
+    # o que mantém o número de partes limitado pelo tamanho do texto.
+    partes: list[str] = []
+    atual = ""
+    for frase in frases:
+        for inicio in range(0, len(frase), 650):
+            pedaco = frase[inicio : inicio + 650]
+            if atual and len(atual) + 1 + len(pedaco) <= 650:
+                atual = f"{atual} {pedaco}"
+            else:
+                if atual:
+                    partes.append(atual)
+                atual = pedaco
+    if atual:
+        partes.append(atual)
+    return partes
+
+
+def candidatos(fontes: list[Fonte]) -> list[tuple[Fonte, str]]:
+    return [(fonte, trecho) for fonte in fontes for trecho in dividir_em_trechos(fonte.texto, fonte.origem in ORIGENS_FORNECIDAS)]
 
 
 class ComparadorNLI:
@@ -50,17 +75,17 @@ class ComparadorNLI:
         return self._modelos
 
     def comparar(self, afirmacao: str, fontes: list[Fonte]) -> list[TrechoAvaliado]:
-        candidatos = [(fonte, trecho) for fonte in fontes for trecho in dividir_em_trechos(fonte.texto)]
-        if not candidatos:
+        pares = candidatos(fontes)
+        if not pares:
             return []
         import torch
 
         embedding, tokenizer, nli = self._carregar()
         # Os vetores são normalizados, então o produto escalar é a similaridade do cosseno.
-        vetores = embedding.encode([afirmacao, *[texto for _, texto in candidatos]], normalize_embeddings=True, convert_to_tensor=True)
+        vetores = embedding.encode([afirmacao, *[texto for _, texto in pares]], normalize_embeddings=True, convert_to_tensor=True)
         similaridades = (vetores[1:] @ vetores[0]).tolist()
         melhor_por_dominio: dict[str, tuple[Fonte, str, float]] = {}
-        for (fonte, trecho), similaridade in zip(candidatos, similaridades):
+        for (fonte, trecho), similaridade in zip(pares, similaridades):
             if similaridade < LIMIARES["similaridade_selecao"]:
                 continue
             anterior = melhor_por_dominio.get(fonte.dominio)
