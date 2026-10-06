@@ -11,6 +11,7 @@ dependencies = [
   "beautifulsoup4>=4.12,<5",
   "pydantic>=2,<3",
   "python-dotenv>=1,<2",
+  "numpy>=2,<3",
 ]
 
 [project.optional-dependencies]
@@ -26,7 +27,7 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["veritai"]
+packages = ["veritai", "veritai.base"]
 
 [tool.setuptools.package-data]
 veritai = ["config.json"]

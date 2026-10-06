@@ -17,7 +17,10 @@ A VeritAI recomenda e documenta. A decisão de publicar é sempre de um revisor 
 | Evidências enviadas pelo publisher (links e documentos com texto) | Implementado |
 | Contagem de fontes independentes por domínio | Implementado |
 | Conjunto rotulado real e medição V0 × V1 | Planejado |
-| Base própria de evidências e checagens (busca textual + vetorial) | Planejado |
+| Base própria em SQLite: documentos, trechos, checagens, busca BM25 + vetorial com RRF | Implementado, ainda sem a carga das fontes do grupo |
+| Fontes independentes por grupo (mesmo domínio ou cópia quase literal) | Implementado |
+| Filtro de evidências pela data da notícia | Implementado |
+| PostgreSQL + pgvector, atualização de documentos na base | Planejado |
 | Modelo treinado V2 (XLM-RoBERTa ajustado) | Planejado, depende de dados rotulados |
 | Porcentagem calibrada | Planejado, depende de treino, teste e calibração |
 
@@ -75,6 +78,22 @@ Formato do conjunto, métricas e regras de uso estão em [`eval/README.md`](eval
 
 O relatório também traz `avisos` (falhas de busca) e `versoes` (modelo, NLI, embedding, configuração e base de evidências). Os modelos de dados ficam em `veritai/relatorio.py`.
 
+**Data da notícia:** `noticia.data` deve vir em `AAAA-MM-DD`. Com ela, as evidências de qualquer origem publicadas em dias posteriores ficam de fora; as do mesmo dia entram. As evidências sem data entram e o relatório registra isso em `limitacoes`. Uma data em outro formato não filtra nada e também gera uma limitação.
+
+**Fontes independentes:** páginas do mesmo domínio e cópias quase literais, de qualquer origem, contam como uma única fonte. Matérias reescritas da mesma origem ainda contam como independentes.
+
+## Base própria
+
+A VeritAI busca evidências e checagens anteriores numa base SQLite rastreável (`VERITAI_BASE`, padrão `data/veritai.sqlite3`). A busca combina BM25 e vetores, e o relatório registra o snapshot da base em `versoes["base_evidencias"]`. Sem o arquivo do banco, o serviço funciona só com web e publisher.
+
+```bash
+.venv/bin/python -m veritai.base importar-textos documento.txt --data 2026-03-01
+.venv/bin/python -m veritai.base indexar --perfil v0
+.venv/bin/python -m veritai.base estatisticas
+```
+
+Comandos, esquema do banco e limitações estão em [`veritai/base/README.md`](veritai/base/README.md). A base é carregada só a partir da lista de fontes confiáveis definida pelo grupo, sem coleta em massa. As notícias fictícias do FOMO nunca entram.
+
 ## Estrutura
 
 ```text
@@ -84,11 +103,13 @@ veritai/
 ├── fontes.py      descoberta e leitura de fontes públicas
 ├── modelos.py     comparação por similaridade e NLI
 ├── regras.py      agregação dos trechos em um resultado
+├── copias.py      agrupamento de fontes (domínio e cópias quase literais)
+├── base/          base própria em SQLite: carga, busca BM25 + vetorial, linha de comando
 ├── relatorio.py   contrato de entrada e saída
 ├── config.py      configuração e segredos do ambiente
 └── config.json    perfis de modelo, seleção e limiares versionados
 eval/              script de avaliação e conjunto de contraste
-tests/             testes do pipeline, da API e da avaliação
+tests/             testes do pipeline, da API, da base e da avaliação
 ```
 
 ## Princípios

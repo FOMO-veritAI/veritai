@@ -1,5 +1,5 @@
 {
-  "versao_config": "2026-10-06.2",
+  "versao_config": "2026-10-06.3",
   "perfil_padrao": "v0",
   "perfis": {
     "v0": {
@@ -28,6 +28,20 @@
     "similaridade_selecao": 0.38,
     "similaridade_forte": 0.43,
     "nli_forte": 0.72
+  },
+  "copias": {
+    "_nota": "Parâmetros de operação não validados. Só detectam cópias quase literais; matérias reescritas da mesma origem ainda contam como independentes.",
+    "palavras_por_shingle": 5,
+    "jaccard_minimo": 0.8
+  },
+  "base": {
+    "_nota": "Parâmetros de operação da base própria, não validados com dados rotulados.",
+    "palavras_por_trecho": 150,
+    "palavras_de_sobreposicao": 30,
+    "rrf_k": 60,
+    "trechos_por_busca": 10,
+    "checagens_por_afirmacao": 3,
+    "max_urls_por_carga": 100
   },
   "base_evidencias": "busca_web_tempo_real"
 }

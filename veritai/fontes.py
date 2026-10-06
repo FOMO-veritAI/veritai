@@ -32,8 +32,11 @@ class Fonte:
     titulo: str
     dominio: str
     texto: str
-    origem: str  # busca_web | checagem_externa | link_publisher | anexo
+    origem: str  # busca_web | link_publisher | anexo | base_propria
     data_publicacao: str | None = None
+    texto_completo: str = ""  # documento inteiro, quando texto é só um trecho (base própria)
+    copia_de: str = ""  # grupo de cópias já gravado na base própria
+    grupo: str = ""  # fonte independente: mesmo domínio ou cópia quase literal
 
 
 def dominio_da_fonte(url: str, nome: str) -> str:

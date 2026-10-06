@@ -13,6 +13,8 @@ load_dotenv(PACKAGE_DIR.parent / ".env")
 CONFIG = json.loads((PACKAGE_DIR / "config.json").read_text(encoding="utf-8"))
 LIMIARES = CONFIG["limiares_triagem"]
 SELECAO = CONFIG["selecao"]
+COPIAS = CONFIG["copias"]
+BASE = CONFIG["base"]
 
 GOOGLE_FACT_CHECK_API_KEY = os.getenv("GOOGLE_FACT_CHECK_API_KEY", "").strip()
 
@@ -29,12 +31,17 @@ def perfil(nome: str | None = None) -> dict[str, str]:
     return CONFIG["perfis"][nome_perfil(nome)]
 
 
-def versoes(nome: str | None = None) -> dict[str, str]:
+def caminho_base() -> Path:
+    return Path(os.getenv("VERITAI_BASE", "").strip() or PACKAGE_DIR.parent / "data" / "veritai.sqlite3")
+
+
+def versoes(nome: str | None = None, snapshot_base: str | None = None) -> dict[str, str]:
     modelos = perfil(nome)
     return {
         "modelo": modelos["versao_modelo"],
         "nli": modelos["nli"],
         "embedding": modelos["embedding"],
         "config": CONFIG["versao_config"],
-        "base_evidencias": CONFIG["base_evidencias"],
+        # Com base própria, registra o snapshot da última carga; sem ela, só a busca na web.
+        "base_evidencias": snapshot_base or CONFIG["base_evidencias"],
     }

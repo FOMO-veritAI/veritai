@@ -23,7 +23,8 @@ from veritai.relatorio import ChecagemAnterior, RelatorioAfirmacao
 
 
 def fonte(dominio: str, origem: str = "busca_web") -> Fonte:
-    return Fonte(url=f"https://{dominio}/materia", titulo=f"Matéria em {dominio}", dominio=dominio, texto="texto", origem=origem)
+    # Texto distinto por domínio, para que fontes diferentes não sejam tomadas por cópias.
+    return Fonte(url=f"https://{dominio}/materia", titulo=f"Matéria em {dominio}", dominio=dominio, texto=f"texto de {dominio}", origem=origem)
 
 
 class ComparadorFixo:

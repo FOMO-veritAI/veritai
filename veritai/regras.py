@@ -9,23 +9,28 @@ from .modelos import TrechoAvaliado
 @dataclass
 class Agregado:
     resultado: str
-    dominios_a_favor: set[str]
-    dominios_contra: set[str]
+    grupos_a_favor: set[str]
+    grupos_contra: set[str]
 
     @property
     def fontes_independentes(self) -> int:
-        # Várias páginas do mesmo domínio contam como uma única comprovação.
-        return len(self.dominios_a_favor | self.dominios_contra)
+        # Páginas do mesmo domínio e cópias quase literais contam como uma única comprovação.
+        return len(self.grupos_a_favor | self.grupos_contra)
 
 
 def forte(item: TrechoAvaliado) -> bool:
     return item.similaridade >= LIMIARES["similaridade_forte"] and item.pontuacao_nli >= LIMIARES["nli_forte"]
 
 
+def grupo(item: TrechoAvaliado) -> str:
+    # Sem agrupamento calculado (fonte.grupo vazio), vale o domínio.
+    return item.fonte.grupo or item.fonte.dominio
+
+
 def agregar(itens: list[TrechoAvaliado]) -> Agregado:
     fortes = [item for item in itens if forte(item)]
-    a_favor = {item.fonte.dominio for item in fortes if item.relacao == "entailment"}
-    contra = {item.fonte.dominio for item in fortes if item.relacao == "contradiction"}
+    a_favor = {grupo(item) for item in fortes if item.relacao == "entailment"}
+    contra = {grupo(item) for item in fortes if item.relacao == "contradiction"}
     if a_favor and contra:
         resultado = "CONFLICTING_EVIDENCE"
     elif contra:

@@ -6,6 +6,8 @@ primeira análise, para que os testes e a API subam sem baixar pesos.
 
 import re
 import threading
+
+import numpy
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -34,6 +36,8 @@ class Comparador(Protocol):
 
 class Modelos(Protocol):
     def similaridades(self, consulta: str, textos: list[str]) -> list[float]: ...
+
+    def vetorizar(self, textos: list[str], tipo: str) -> "numpy.ndarray": ...
 
     def classificar(self, pares: list[tuple[str, str]]) -> list[dict[str, float]]: ...
 
@@ -94,8 +98,9 @@ def selecionar(
     dominios: set[str] = set()
     primeiras, repetidas = [], []
     for fonte, itens in selecionadas:
-        (repetidas if fonte.dominio in dominios else primeiras).append((fonte, itens))
-        dominios.add(fonte.dominio)
+        chave = fonte.grupo or fonte.dominio
+        (repetidas if chave in dominios else primeiras).append((fonte, itens))
+        dominios.add(chave)
     return (primeiras + repetidas)[:max_fontes]
 
 
@@ -153,6 +158,13 @@ class ModelosHF:
         # Os vetores são normalizados, então o produto escalar é a similaridade do cosseno.
         vetores = embedding.encode(entradas, normalize_embeddings=True, convert_to_tensor=True)
         return (vetores[1:] @ vetores[0]).tolist()
+
+    def vetorizar(self, textos: list[str], tipo: str) -> numpy.ndarray:
+        """Vetores normalizados (float32) para a base própria; tipo é "consulta" ou "trecho"."""
+        embedding, *_ = self._carregar()
+        prefixo = self.config["prefixo_consulta"] if tipo == "consulta" else self.config["prefixo_trecho"]
+        vetores = embedding.encode([prefixo + texto for texto in textos], normalize_embeddings=True, convert_to_numpy=True)
+        return numpy.asarray(vetores, dtype=numpy.float32)
 
     def classificar(self, pares: list[tuple[str, str]]) -> list[dict[str, float]]:
         import torch

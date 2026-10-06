@@ -16,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from veritai.copias import agrupar  # noqa: E402
 from veritai.fontes import Fonte, dominio_da_fonte  # noqa: E402
 
 CLASSES = ["SUPPORTED", "REFUTED", "NOT_ENOUGH_EVIDENCE", "CONFLICTING_EVIDENCE"]
@@ -110,7 +111,9 @@ def prever(itens: list[dict], comparador) -> list[dict]:
 
     predicoes = []
     for item in itens:
-        avaliados = comparador.comparar(item["afirmacao"], fontes_do_item(item))
+        fontes = fontes_do_item(item)
+        agrupar(fontes)
+        avaliados = comparador.comparar(item["afirmacao"], fontes)
         predicoes.append({
             "id": item.get("id"),
             "par": item.get("par"),
