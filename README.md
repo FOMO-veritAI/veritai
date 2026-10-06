@@ -62,6 +62,14 @@ docker build --target teste .        # a mesma suíte com Python 3.12, a versão
 
 Os testes usam modelos e busca simulados: rodam em menos de um segundo e não precisam do extra `modelos`. O estágio `teste` do Dockerfile não entra na imagem final.
 
+## Demonstração técnica
+
+```bash
+.venv/bin/python demo/gerar_demo.py      # precisa do extra modelos; grava demo/saida/demo.json (fora do git)
+```
+
+O arquivo traz três casos fictícios (Exemplópolis) passados pelos perfis v0 e v1, com o rastro de cada etapa: trechos, janelas, similaridade, janelas levadas ao NLI, probabilidades, limiares, regra de agregação, grupos de fontes, relatório da API e tempos. Também traz a avaliação no conjunto de contraste (só sanidade), o resumo da suíte de testes e os metadados (commit e versões). O rastro é interno, um parâmetro opcional do comparador, e não altera a saída da API.
+
 ## Container
 
 A imagem roda a API na porta 8100, com Python 3.12, torch só-CPU e usuário sem privilégios (uid/gid 10001). Modelos e base ficam fora da imagem, em volumes.

@@ -6,6 +6,7 @@ primeira análise, para que os testes e a API subam sem baixar pesos.
 
 import re
 import threading
+import time
 
 import numpy
 from dataclasses import dataclass, field
@@ -182,19 +183,104 @@ class ComparadorNLI:
         self.perfil = nome_perfil(nome_do_perfil)
         self.modelos = modelos or ModelosHF(self.perfil)
 
-    def comparar(self, afirmacao: str, fontes: list[Fonte]) -> list[TrechoAvaliado]:
+    def comparar(self, afirmacao: str, fontes: list[Fonte], rastro: dict | None = None) -> list[TrechoAvaliado]:
+        """Compara a afirmação com as fontes. Com rastro (uso interno, ex.: demonstração), registra cada etapa;
+        o resultado é o mesmo com ou sem rastro."""
+        relogio = time.perf_counter
+        tempos: dict[str, float] = {}
+        inicio = relogio()
         pares = candidatos(fontes)
-        if not pares:
-            return []
-        similaridades = self.modelos.similaridades(afirmacao, [janela for _, janela in pares])
-        selecionadas = selecionar(
-            pares, similaridades, SELECAO["trechos_por_fonte"], SELECAO["max_fontes_por_afirmacao"], LIMIARES["similaridade_selecao"]
-        )
-        if not selecionadas:
-            return []
-        entradas = [(janela, afirmacao) for _, itens in selecionadas for janela, _ in itens]
-        probabilidades = iter(self.modelos.classificar(entradas))
+        tempos["divisao_em_janelas"] = relogio() - inicio
+        similaridades: list[float] = []
+        selecionadas: list[tuple[Fonte, list[tuple[str, float]]]] = []
+        avaliadas: dict[tuple[int, str], list[dict[str, float]]] = {}
         resultado: list[TrechoAvaliado] = []
-        for fonte, itens in selecionadas:
-            resultado.extend(consolidar(fonte, [(janela, similaridade, next(probabilidades)) for janela, similaridade in itens]))
+        if pares:
+            inicio = relogio()
+            similaridades = self.modelos.similaridades(afirmacao, [janela for _, janela in pares])
+            tempos["similaridade"] = relogio() - inicio
+            inicio = relogio()
+            selecionadas = selecionar(
+                pares, similaridades, SELECAO["trechos_por_fonte"], SELECAO["max_fontes_por_afirmacao"], LIMIARES["similaridade_selecao"]
+            )
+            tempos["selecao"] = relogio() - inicio
+        if selecionadas:
+            entradas = [(janela, afirmacao) for _, itens in selecionadas for janela, _ in itens]
+            inicio = relogio()
+            probabilidades = self.modelos.classificar(entradas)
+            tempos["nli"] = relogio() - inicio
+            inicio = relogio()
+            restantes = iter(probabilidades)
+            for fonte, itens in selecionadas:
+                com_nli = [(janela, similaridade, next(restantes)) for janela, similaridade in itens]
+                for janela, _, nli in com_nli:
+                    avaliadas.setdefault((id(fonte), janela), []).append(nli)
+                resultado.extend(consolidar(fonte, com_nli))
+            tempos["consolidacao"] = relogio() - inicio
+        if rastro is not None:
+            rastro.update(montar_rastro(self.perfil, fontes, pares, similaridades, avaliadas, resultado, tempos))
         return resultado
+
+
+def montar_rastro(
+    nome_do_perfil: str,
+    fontes: list[Fonte],
+    pares: list[tuple[Fonte, str]],
+    similaridades: list[float],
+    avaliadas: dict[tuple[int, str], list[dict[str, float]]],
+    resultado: list[TrechoAvaliado],
+    tempos: dict[str, float],
+) -> dict:
+    # Uma janela pode se repetir na mesma fonte. A seleção é estável, então as ocorrências levadas ao NLI
+    # (e as que ficaram no relatório) são as primeiras de cada texto: marca-se só essa quantidade, por posição.
+    pendentes_nli = {chave: list(lista) for chave, lista in avaliadas.items()}
+    pendentes_relatorio: dict[tuple[int, str], int] = {}
+    for item in resultado:
+        chave = (id(item.fonte), item.trecho)
+        pendentes_relatorio[chave] = pendentes_relatorio.get(chave, 0) + 1
+    por_fonte = []
+    for fonte in fontes:
+        fornecido = fonte.origem in ORIGENS_FORNECIDAS
+        trechos = dividir_em_trechos(fonte.texto, fornecido)
+        por_fonte.append({
+            "titulo": fonte.titulo,
+            "divisao": "frases de 45 a 800 caracteres" if not fornecido else "partes de até 650 caracteres (frases curtas agrupadas)",
+            "url": fonte.url,
+            "dominio": fonte.dominio,
+            "grupo": fonte.grupo or fonte.dominio,
+            "origem": fonte.origem,
+            "data_publicacao": fonte.data_publicacao,
+            "trechos": trechos,
+            "janelas": [],
+        })
+    posicao = {id(fonte): i for i, fonte in enumerate(fontes)}
+    contagem = [0] * len(fontes)
+    for indice, (fonte, janela) in enumerate(pares):
+        i = posicao[id(fonte)]
+        # janelas() lista primeiro as de uma parte (um trecho) e depois as de duas partes consecutivas.
+        partes = 1 if contagem[i] < len(por_fonte[i]["trechos"]) else 2
+        contagem[i] += 1
+        chave = (id(fonte), janela)
+        nli = pendentes_nli[chave].pop(0) if pendentes_nli.get(chave) else None
+        no_relatorio = nli is not None and pendentes_relatorio.get(chave, 0) > 0
+        if no_relatorio:
+            pendentes_relatorio[chave] -= 1
+        por_fonte[i]["janelas"].append({
+            "texto": janela,
+            "partes": partes,
+            "frases": len(re.findall(r"[^.!?]+[.!?]*", janela.strip())),
+            "similaridade": similaridades[indice] if indice < len(similaridades) else None,
+            "levada_ao_nli": nli is not None,
+            "nli": nli,
+            "no_relatorio": no_relatorio,
+        })
+    return {
+        "perfil": nome_do_perfil,
+        "parametros": {
+            "similaridade_selecao": LIMIARES["similaridade_selecao"],
+            "trechos_por_fonte": SELECAO["trechos_por_fonte"],
+            "max_fontes_por_afirmacao": SELECAO["max_fontes_por_afirmacao"],
+        },
+        "fontes": por_fonte,
+        "tempos_s": tempos,
+    }

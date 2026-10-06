@@ -26,3 +26,6 @@ mlruns/
 
 # Canvas local do Maestri
 .maestri/
+
+# Saída gerada pela demonstração
+demo/saida/

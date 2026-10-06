@@ -34,6 +34,9 @@ eval/*
 !eval/avaliar.py
 !eval/contraste.jsonl
 
+# Demonstração (fora da imagem)
+demo/
+
 # Arquivos do próprio container
 docker-compose.yml
 .dockerignore
