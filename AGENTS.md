@@ -16,12 +16,14 @@ Contexto acadêmico: Challenge 1 (Fake News / Desinformação) de uma residênci
 
 ## Estado atual (diferencie sempre implementado de planejado)
 
-Implementado: API `POST /analisar` e `GET /health`; pipeline V0 (similaridade `paraphrase-multilingual-MiniLM-L12-v2` + NLI `multilingual-MiniLMv2-L6-mnli-xnli` + regras); busca em Bing News RSS, GDELT e Google Fact Check opcional; evidências enviadas pelo publisher; contagem de fontes independentes por domínio; 12 testes.
+Implementado: API `POST /analisar` e `GET /health`; perfis de modelo em `config.json`, escolhidos por `VERITAI_PERFIL` (padrão `v0`); perfil V0 (similaridade `paraphrase-multilingual-MiniLM-L12-v2` + NLI `multilingual-MiniLMv2-L6-mnli-xnli` + regras; mantém os modelos da V0, mas usa a seleção nova de janelas); baseline V1 (embedding `intfloat/multilingual-e5-base` com prefixos `query:`/`passage:` + NLI `MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7`), ainda não medida em dados rotulados; janelas de 1 a 2 frases, com as 3 mais similares de cada fonte levadas ao NLI, em até 6 fontes, priorizando domínios diferentes; busca em Bing News RSS e GDELT; Google Fact Check opcional, só para listar checagens anteriores; evidências enviadas pelo publisher; contagem de fontes independentes por domínio; `eval/avaliar.py` (macro-F1, F1 por classe, falsas aprovações, matriz de confusão, IC por bootstrap) e `eval/contraste.jsonl` (28 itens, só sanidade); 61 testes.
+
+Os limiares de `config.json` não foram validados para nenhum perfil. Na V1, o filtro de similaridade praticamente não atua. Em observação exploratória no contraste, o e5 deu entre 0,80 e 0,87 a todos os pares; o detalhe está em `eval/README.md`.
 
 Planejado, nesta ordem:
-1. Baseline V1: NLI `MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7` e embedding `intfloat/multilingual-e5-base` ou `BAAI/bge-m3`.
+1. ~~Baseline V1~~ implementada como perfil `v1`; falta medir em dados rotulados reais antes de virar padrão. `BAAI/bge-m3` ainda não testado.
 2. Base própria de evidências e checagens (SQLite agora; PostgreSQL + pgvector depois), busca BM25 + vetorial com fusão RRF, importação de ClaimReview.
-3. Script de avaliação (`eval/`) e primeira medição V0 × V1.
+3. Conjunto rotulado real (separado por evento, período e fonte) e primeira medição V0 × V1. O script `eval/avaliar.py` já existe; `eval/contraste.jsonl` é só sanidade e não conta como medição.
 4. Modelo treinado V2: `xlm-roberta-base` com ajuste fino em 4 classes sobre (afirmação, trecho). Só substitui a V1 se tiver macro-F1 maior e taxa de falsas aprovações igual ou menor na validação.
 5. Calibração (temperature scaling ou Platt) e limiares de suficiência; só então liberar a porcentagem.
 
@@ -45,7 +47,7 @@ Os modelos de dados estão em `veritai/relatorio.py`. Mudanças no contrato queb
 
 ## Avaliação
 
-Separação treino/validação/calibração/teste por evento, período e fonte; teste usado uma única vez. Métricas principais: macro-F1 e taxa de falsas aprovações. Também: precisão de apoia/contradiz, Recall@5 e MRR, Brier score, ECE e curva de calibração, cobertura × erro. Intervalos de confiança por bootstrap.
+Separação treino/validação/calibração/teste por evento, período e fonte; teste usado uma única vez. Métricas principais: macro-F1 e taxa de falsas aprovações (prediz `SUPPORTED` quando o rótulo é `REFUTED`, `NOT_ENOUGH_EVIDENCE` ou `CONFLICTING_EVIDENCE`). Também: precisão de apoia/contradiz, Recall@5 e MRR, Brier score, ECE e curva de calibração, cobertura × erro. Intervalos de confiança por bootstrap.
 
 ## Como rodar e testar
 

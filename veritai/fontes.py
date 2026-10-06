@@ -36,6 +36,11 @@ class Fonte:
     data_publicacao: str | None = None
 
 
+def dominio_da_fonte(url: str, nome: str) -> str:
+    # Documentos sem URL viram uma fonte própria, identificada pelo nome.
+    return urlparse(url).hostname or f"documento:{nome}"
+
+
 def safe_public_url(url: str) -> bool:
     parsed = urlparse(url)
     if parsed.scheme not in {"https", "http"} or not parsed.hostname:

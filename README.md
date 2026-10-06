@@ -9,16 +9,29 @@ A VeritAI recomenda e documenta. A decisão de publicar é sempre de um revisor 
 | Componente | Situação |
 |---|---|
 | API `POST /analisar` com relatório por afirmação | Implementado |
-| Pipeline V0: similaridade (MiniLM) + NLI (MiniLMv2) + regras | Implementado, migrado do protótipo |
+| Perfil V0: similaridade (MiniLM) + NLI (MiniLMv2) + regras | Implementado, perfil padrão; mesmos modelos da V0, com a seleção nova de janelas |
+| Baseline V1: similaridade (e5-base) + NLI (mDeBERTa-v3) + regras | Implementado como perfil `v1`, ainda não medido em dados rotulados |
+| Janelas de 1 a 2 frases; 3 janelas por fonte levadas ao NLI | Implementado |
+| Script de avaliação (`eval/avaliar.py`) e conjunto de contraste (só sanidade) | Implementado |
 | Busca de fontes: Bing News RSS, GDELT, Google Fact Check (opcional) | Implementado |
 | Evidências enviadas pelo publisher (links e documentos com texto) | Implementado |
 | Contagem de fontes independentes por domínio | Implementado |
-| Baseline V1 (mDeBERTa-v3 + e5/bge-m3) | Planejado |
+| Conjunto rotulado real e medição V0 × V1 | Planejado |
 | Base própria de evidências e checagens (busca textual + vetorial) | Planejado |
 | Modelo treinado V2 (XLM-RoBERTa ajustado) | Planejado, depende de dados rotulados |
 | Porcentagem calibrada | Planejado, depende de treino, teste e calibração |
 
-**Hoje não existe porcentagem.** O campo `porcentagem` vem sempre `null` e `avaliavel` vem `false`, com o motivo registrado em `motivo_nao_avaliavel`. Os limiares em `veritai/config.json` são herdados do protótipo e ainda não foram validados com dados.
+**Hoje não existe porcentagem.** O campo `porcentagem` vem sempre `null` e `avaliavel` vem `false`, com o motivo registrado em `motivo_nao_avaliavel`. Os limiares em `veritai/config.json` são herdados do protótipo V0 e não foram validados para nenhum perfil. Eles terão de ser definidos por perfil, na avaliação com dados rotulados. Na V1, o filtro de similaridade atual praticamente não atua. Em observação exploratória no conjunto de contraste, o e5 deu entre 0,80 e 0,87 a todos os pares, acima dos limiares de 0,38 e 0,43 (detalhes em [`eval/README.md`](eval/README.md)).
+
+## Perfis de modelo
+
+`veritai/config.json` define os perfis `v0` e `v1`. O perfil é escolhido pela variável de ambiente `VERITAI_PERFIL`, com padrão `v0` até a V1 ser medida em dados rotulados. O campo `versoes` do relatório e o `GET /health` mostram o perfil em uso.
+
+```bash
+VERITAI_PERFIL=v1 .venv/bin/python -m uvicorn veritai.api:app --host 127.0.0.1 --port 8100
+```
+
+Para cada afirmação, o texto das fontes é dividido em janelas de uma e de duas frases. As 3 janelas mais similares de cada fonte, em até 6 fontes, vão para o NLI. A seleção dá prioridade a domínios diferentes antes de repetir páginas do mesmo site. Esses números são parâmetros de operação, em `selecao` no config. De cada fonte, entram no relatório a janela com maior probabilidade de apoio e a com maior probabilidade de contradição.
 
 ## Como rodar
 
@@ -41,6 +54,14 @@ Para usar o Google Fact Check, copie `.env.example` para `.env` e preencha a cha
 ```
 
 Os testes usam modelos e busca simulados: rodam em menos de um segundo e não precisam do extra `modelos`.
+
+## Avaliação
+
+```bash
+.venv/bin/python eval/avaliar.py --perfil v1 --arquivo eval/contraste.jsonl
+```
+
+Formato do conjunto, métricas e regras de uso estão em [`eval/README.md`](eval/README.md). O `eval/contraste.jsonl` é só teste de sanidade: não mede desempenho e não pode ser usado em treino nem em calibração.
 
 ## Contrato
 
@@ -65,8 +86,9 @@ veritai/
 ├── regras.py      agregação dos trechos em um resultado
 ├── relatorio.py   contrato de entrada e saída
 ├── config.py      configuração e segredos do ambiente
-└── config.json    modelos e limiares versionados
-tests/             testes do pipeline e da API
+└── config.json    perfis de modelo, seleção e limiares versionados
+eval/              script de avaliação e conjunto de contraste
+tests/             testes do pipeline, da API e da avaliação
 ```
 
 ## Princípios

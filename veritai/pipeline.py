@@ -2,10 +2,9 @@
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from urllib.parse import urlparse
 
 from .config import CONFIG, versoes
-from .fontes import Fonte, buscar_fontes
+from .fontes import Fonte, buscar_fontes, dominio_da_fonte
 from .modelos import Comparador, TrechoAvaliado, candidatos
 from .regras import Agregado, agregar
 from .relatorio import (
@@ -100,8 +99,7 @@ async def analisar(pedido: PedidoAnalise, comparador: Comparador, buscador: Busc
         Fonte(
             url=item.url,
             titulo=item.titulo,
-            # Documentos sem URL viram uma fonte própria, identificada pelo título.
-            dominio=urlparse(item.url).hostname or f"documento:{item.titulo}",
+            dominio=dominio_da_fonte(item.url, item.titulo),
             texto=item.texto,
             origem=item.origem,
             data_publicacao=item.data_publicacao,
@@ -120,4 +118,4 @@ async def analisar(pedido: PedidoAnalise, comparador: Comparador, buscador: Busc
         itens = await asyncio.to_thread(comparador.comparar, afirmacao, comparaveis)
         houve_texto = bool(candidatos(comparaveis))
         relatorios.append(montar_relatorio(afirmacao, itens, pedido, houve_texto, checagens))
-    return RelatorioAnalise(afirmacoes=relatorios, avisos=list(dict.fromkeys(avisos)), versoes=versoes())
+    return RelatorioAnalise(afirmacoes=relatorios, avisos=list(dict.fromkeys(avisos)), versoes=versoes(comparador.perfil))

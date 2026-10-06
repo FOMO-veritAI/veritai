@@ -1,17 +1,33 @@
 {
-  "versao_config": "2026-10-06.1",
-  "versao_modelo": "veritai-v0",
-  "modelos": {
-    "embedding": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-    "nli": "MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli"
+  "versao_config": "2026-10-06.2",
+  "perfil_padrao": "v0",
+  "perfis": {
+    "v0": {
+      "versao_modelo": "veritai-v0",
+      "embedding": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "nli": "MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli",
+      "prefixo_consulta": "",
+      "prefixo_trecho": ""
+    },
+    "v1": {
+      "versao_modelo": "veritai-v1",
+      "embedding": "intfloat/multilingual-e5-base",
+      "nli": "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7",
+      "prefixo_consulta": "query: ",
+      "prefixo_trecho": "passage: "
+    }
   },
   "calibrado": false,
+  "selecao": {
+    "_nota": "Parâmetros de operação (custo de CPU), não limiares de decisão.",
+    "trechos_por_fonte": 3,
+    "max_fontes_por_afirmacao": 6
+  },
   "limiares_triagem": {
-    "_nota": "Valores herdados do protótipo, sem validação estatística. Serão substituídos por limiares escolhidos na avaliação.",
+    "_nota": "Valores herdados do protótipo V0, não validados para nenhum perfil. Precisam ser definidos por perfil na avaliação com dados rotulados; na V1 (e5) o filtro de similaridade atual praticamente não atua.",
     "similaridade_selecao": 0.38,
     "similaridade_forte": 0.43,
-    "nli_forte": 0.72,
-    "max_trechos_por_afirmacao": 6
+    "nli_forte": 0.72
   },
   "base_evidencias": "busca_web_tempo_real"
 }

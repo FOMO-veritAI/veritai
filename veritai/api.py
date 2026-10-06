@@ -15,7 +15,7 @@ def criar_app(comparador: Comparador | None = None, buscador: Buscador = buscar_
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "versoes": versoes()}
+        return {"status": "ok", "perfil": comparador.perfil, "versoes": versoes(comparador.perfil)}
 
     @app.post("/analisar", response_model=RelatorioAnalise)
     async def analisar_noticia(pedido: PedidoAnalise):
