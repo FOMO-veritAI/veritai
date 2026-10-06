@@ -1,0 +1,35 @@
+[project]
+name = "veritai"
+version = "0.1.0"
+description = "VeritAI: verificação de afirmações factuais do FOMO"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.34,<1",
+  "httpx>=0.28,<1",
+  "beautifulsoup4>=4.12,<5",
+  "pydantic>=2,<3",
+  "python-dotenv>=1,<2",
+]
+
+[project.optional-dependencies]
+modelos = [
+  "sentence-transformers>=5,<7",
+  "transformers>=4.49,<6",
+  "torch>=2.9,<3",
+]
+dev = ["pytest>=8,<10"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["veritai"]
+
+[tool.setuptools.package-data]
+veritai = ["config.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

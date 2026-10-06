@@ -1,0 +1,25 @@
+# Segredos
+.env
+
+# Ambiente e caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Dados, modelos e resultados locais (versionados por manifesto, não pelo git)
+data/
+models/
+mlruns/
+*.sqlite3
+*.safetensors
+*.bin
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Sistema
+.DS_Store
