@@ -114,12 +114,33 @@ async def ler_limitado(response: httpx.Response) -> bytes:
     return bytes(corpo)
 
 
+def data_do_json_ld(soup: BeautifulSoup) -> str | None:
+    """datePublished do schema.org em <script type="application/ld+json">, inclusive dentro de @graph."""
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            pendentes = [json.loads(script.string or "")]
+        except ValueError:
+            continue
+        while pendentes:
+            item = pendentes.pop()
+            if isinstance(item, list):
+                pendentes.extend(item)
+            elif isinstance(item, dict):
+                valor = str(item.get("datePublished") or "")[:10]
+                if re.fullmatch(r"\d{4}-\d{2}-\d{2}", valor):
+                    return valor
+                pendentes.extend(item.get("@graph") or [])
+    return None
+
+
 def data_da_pagina(soup: BeautifulSoup) -> str | None:
     meta = soup.find("meta", attrs={"property": "article:published_time"})
     if meta and meta.get("content"):
         return str(meta["content"])[:10]
-    # Portais Plone (gov.br, Agência Gov) não usam article:published_time. A data de publicação é o início
-    # de DC.date.valid_range ("AAAA/MM/DD - "); DC.date.created fica como último recurso.
+    if data := data_do_json_ld(soup):
+        return data
+    # Portais Plone (gov.br, Agência Gov) sem JSON-LD: a data de publicação é o início de
+    # DC.date.valid_range ("AAAA/MM/DD - "); DC.date.created fica como último recurso.
     for nome in ("DC.date.valid_range", "DC.date.created"):
         meta = soup.find("meta", attrs={"name": nome})
         valor = str(meta.get("content") or "")[:10].replace("/", "-") if meta else ""

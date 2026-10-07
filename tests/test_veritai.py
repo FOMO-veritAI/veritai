@@ -408,6 +408,11 @@ def test_requisicoes_pedem_resposta_sem_compressao():
         # Plone (gov.br): o início de valid_range é a publicação e vale mais que a criação.
         ('<meta name="DC.date.created" content="2026-10-01T10:00:00-03:00"><meta name="DC.date.valid_range" content="2026/10/06 - ">', "2026-10-06"),
         ('<meta name="DC.date.created" content="2026-10-01T10:00:00-03:00">', "2026-10-01"),
+        # gov.br do INEP: só JSON-LD; o datePublished vale mais que as metas DC.
+        ('<script type="application/ld+json">{"@type": "NewsArticle", "datePublished": "2026-09-29T12:10:43-03:00"}</script>'
+         '<meta name="DC.date.created" content="2026-09-01">', "2026-09-29"),
+        ('<script type="application/ld+json">{"@graph": [{"@type": "WebPage"}, {"datePublished": "2026-09-28"}]}</script>', "2026-09-28"),
+        ('<script type="application/ld+json">{inválido</script>', None),
         ('<meta name="DC.date.valid_range" content=" - "><meta name="DC.date.modified" content="2026-10-02">', None),
         ("", None),
     ],
