@@ -33,6 +33,8 @@ As evidências entram como texto fornecido (origem `anexo`): nenhuma frase é de
 
 O script também informa o tempo de carga dos modelos e o de inferência.
 
+`--sem-verificador` desliga o verificador de entidade, período e número (`veritai/verificador.py`) para a ablação: o mesmo código, com e sem as regras.
+
 ## Limiares
 
 Os limiares em `veritai/config.json` (`similaridade_selecao`, `similaridade_forte`, `nli_forte`) vêm do protótipo V0 e **não foram validados para nenhum perfil**. Eles terão de ser definidos **por perfil**, na avaliação com dados rotulados (conjunto de validação, nunca o de teste).

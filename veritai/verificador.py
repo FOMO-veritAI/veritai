@@ -34,7 +34,7 @@ NAO_ENTIDADES = {
 # Entidades que a fonte pode citar por outro termo.
 EQUIVALENTES: dict[str, tuple[str, ...]] = {}
 QUEDA = re.compile(r"\b(ca[ií]\w*|caem|recu\w*|queda\w*|diminu\w*|redu[çz]\w*|retra\w*|baix\w*|defla\w*|negativ\w*|perd\w*|encolh\w*)\b", re.IGNORECASE)
-COMPARACAO = re.compile(r"\b(?:frente|ante|em relação|comparad\w*|abaixo|acima|contra|do que|após)\b", re.IGNORECASE)
+COMPARACAO = re.compile(r"\b(?:frente|ante|em relação|comparad\w*|abaixo|acima|contra|do que|após|perdendo para|superando|superou)\b", re.IGNORECASE)
 FUTURO = re.compile(r"\b(ser[áã]o?|v[ãa]o?|dever[áã]o?|deve|devem|previst\w*|pr[óo]xim\w*|a partir de)\b", re.IGNORECASE)
 
 # "milh" antes de "mil": "milhões" também começa com "mil".
@@ -122,6 +122,11 @@ def periodos(texto: str) -> Periodos:
         marcar(achado)
     anos = {int(a.group()) for a in re.finditer(r"\b(19|20)\d{2}\b", texto) if not ocupado[a.start()]}
     return Periodos(meses, trimestres, ciclos, anos)
+
+
+def sem_comparacoes(texto: str) -> str:
+    """Remove as orações de comparação ("ante setembro de 2025", "só perdendo para 2023"): o período delas não é o assunto."""
+    return re.sub(COMPARACAO.pattern + r"[^,;().]*", " ", texto, flags=re.IGNORECASE)
 
 
 def periodo_divergente(afirmacao: Periodos, janela: Periodos) -> bool:
@@ -233,11 +238,13 @@ def contextos(texto: str, qs: list[Quantidade]) -> list[Contexto]:
             proprios = periodos(trecho)
             # Sem período no próprio trecho, vale o da frase ("é de 5,3% e ... no trimestre encerrado em agosto").
             if not (proprios.meses or proprios.trimestres):
-                proprios = periodos(texto[inicio_frase:fim_frase])
-            # Direção: sinal ou verbo de queda logo antes do número; "caiu para 5,3%" é nível, não variação.
+                proprios = periodos(sem_comparacoes(texto[inicio_frase:fim_frase]))
+            # Direção: sinal ou verbo de queda logo antes do número. "Caiu para 5,3%" e "caiu de 102 para 58"
+            # falam de níveis, não de variação.
             anterior = texto[antes : q.inicio]
             queda = QUEDA.search(anterior)
-            resultado.append(Contexto(proprios, q.negativo or bool(queda and not re.search(r"\bpara\b", anterior[queda.end() :]))))
+            nivel = (queda and re.search(r"\bpara\b", anterior[queda.end() :])) or re.match(r"[^.,;]{0,25}?\bpara\s+[-–−]?\d", texto[q.fim :])
+            resultado.append(Contexto(proprios, q.negativo or bool(queda and not nivel)))
     return resultado
 
 
@@ -290,7 +297,7 @@ def bloqueios(afirmacao: str, janela: str, documento: str, titulo: str = "", dom
     if entidade := entidade_ausente(afirmacao, documento, titulo, dominio):
         motivo = f"entidade ausente: {entidade}"
         return {"entailment": motivo, "contradiction": motivo}
-    if periodo_divergente(periodos(afirmacao), periodos(janela)):
+    if periodo_divergente(periodos(afirmacao), periodos(sem_comparacoes(janela))):
         return {"entailment": "período divergente", "contradiction": "período divergente"}
     if numero := numero_ausente(afirmacao, janela):
         sinal = "-" if numero.negativo else ""

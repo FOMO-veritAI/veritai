@@ -95,10 +95,23 @@ def test_quantidades(texto, esperadas):
         ("O IPCA de julho de 2026 foi de 0,07%.", "O IPCA de agosto de 2026 foi de -0,32%, abaixo do 0,07% registrado em julho de 2026.", False),
         ("A taxa foi de 5,3% no trimestre encerrado em maio de 2026.", "A taxa (5,3%) no trimestre de junho de 2026 a agosto de 2026 caiu frente ao encerrado em maio de 2026 (5,6%).", True),
         ("A taxa foi de 5,3% no trimestre encerrado em agosto de 2026.", "Taxa é de 5,3% e subutilização é de 13,1% no trimestre encerrado em agosto de 2026.", False),
+        # Período de comparação não é o período do número; "caiu de X para Y" são níveis.
+        ("O superávit foi de US$ 7,74 bilhões em setembro de 2026.", "Superávit: US$ 7,74 bilhões (+146,4% ante setembro de 2025); Exportações: US$ 34,42 bilhões.", False),
+        ("A diferença caiu de 102 para 58 pontos.", "A diferença passou de 102 para 58 pontos.", False),
     ],
 )
+
+
 def test_numero_ausente(afirmacao, janela, ausente):
     assert (v.numero_ausente(afirmacao, janela) is not None) == ausente
+
+
+def test_periodo_de_comparacao_nao_torna_a_janela_divergente():
+    afirmacao = "O superávit de setembro de 2026 foi o maior da história para meses de setembro."
+    janela = "O superávit foi o segundo melhor para o mês, só perdendo para setembro de 2023 (US$ 9,18 bilhões)."
+    assert "contradiction" not in v.bloqueios(afirmacao, janela, janela)
+    # Sem comparação, um mês explícito diferente continua divergente.
+    assert v.bloqueios(afirmacao, "Em setembro de 2023, o superávit foi de US$ 9,18 bilhões.", "superávit")["contradiction"] == "período divergente"
 
 
 def test_bloqueios_e_ajuste_movem_probabilidade_para_neutro():
