@@ -31,6 +31,7 @@ FROM dependencias AS teste
 RUN pip install "pytest>=8,<10"
 COPY tests ./tests
 COPY eval ./eval
+COPY demo/gerar_demo.py ./demo/
 RUN python -m pytest -q -p no:cacheprovider
 
 # --- Imagem final ----------------------------------------------------------------------------------

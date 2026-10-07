@@ -34,8 +34,9 @@ eval/*
 !eval/avaliar.py
 !eval/contraste.jsonl
 
-# Demonstração (fora da imagem)
-demo/
+# demo: só o script (carregado pelos testes no estágio de teste); a saída gerada fica fora
+demo/*
+!demo/gerar_demo.py
 
 # Arquivos do próprio container
 docker-compose.yml
