@@ -197,5 +197,11 @@ async def _analisar_afirmacoes(
             notas.append(f"{removidas} fonte(s) publicadas depois da data da notícia ({data_noticia.isoformat()}) foram descartadas.")
         if sem_data:
             notas.append(f"{sem_data} fonte(s) sem data de publicação entraram na análise; não foi possível confirmar que são anteriores à notícia.")
+        if neutralizados := [item for item in itens if item.bloqueios]:
+            motivos = sorted({motivo.split(":")[0] for item in neutralizados for motivo in item.bloqueios.values()})
+            notas.append(
+                f"O verificador neutralizou a relação do modelo em {len(neutralizados)} trecho(s) ({'; '.join(motivos)}); "
+                "esses trechos aparecem como neutros e não contam para o resultado."
+            )
         relatorios.append(montar_relatorio(afirmacao, itens, pedido, houve_texto, checagens, base is not None, notas))
     return relatorios, avisos

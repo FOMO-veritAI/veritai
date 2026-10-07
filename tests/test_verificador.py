@@ -157,6 +157,25 @@ def test_comparador_nao_aprova_numero_com_sinal_trocado():
     assert itens[0].bloqueios["entailment"].startswith("número sem correspondente")
 
 
+def test_relatorio_registra_relacoes_neutralizadas():
+    import asyncio
+
+    from veritai.pipeline import analisar
+    from veritai.relatorio import PedidoAnalise
+
+    pedido = PedidoAnalise(
+        noticia={"titulo": "Teste", "data": "2026-09-20"},
+        afirmacoes=["O IPCA de agosto de 2026 foi de 0,32%."],
+        evidencias=[{"titulo": "Release", "texto": "O IPCA de agosto foi de -0,32%.", "data_publicacao": "2026-09-11"}],
+        buscar_na_web=False,
+    )
+    relatorio = asyncio.run(analisar(pedido, ComparadorNLI("v1", ModelosPorJanela({"-0,32%": APOIO}))))
+    item = relatorio.afirmacoes[0]
+    assert item.resultado == "NOT_ENOUGH_EVIDENCE"
+    assert item.evidencias[0].relacao == "neutro"
+    assert any("verificador neutralizou" in nota and "número sem correspondente" in nota for nota in item.limitacoes)
+
+
 def test_verificador_desligado_mantem_o_nli(monkeypatch):
     monkeypatch.setitem(modulo_modelos.VERIFICADOR, "ativo", False)
     release = fonte("O IPCA de agosto foi de -0,32%.")
