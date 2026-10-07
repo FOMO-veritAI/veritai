@@ -114,6 +114,20 @@ async def ler_limitado(response: httpx.Response) -> bytes:
     return bytes(corpo)
 
 
+def data_da_pagina(soup: BeautifulSoup) -> str | None:
+    meta = soup.find("meta", attrs={"property": "article:published_time"})
+    if meta and meta.get("content"):
+        return str(meta["content"])[:10]
+    # Portais Plone (gov.br, Agência Gov) não usam article:published_time. A data de publicação é o início
+    # de DC.date.valid_range ("AAAA/MM/DD - "); DC.date.created fica como último recurso.
+    for nome in ("DC.date.valid_range", "DC.date.created"):
+        meta = soup.find("meta", attrs={"name": nome})
+        valor = str(meta.get("content") or "")[:10].replace("/", "-") if meta else ""
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", valor):
+            return valor
+    return None
+
+
 async def ler_pagina(url: str, origem: str = "busca_web") -> Fonte:
     destino = await asyncio.to_thread(resolver_publico, url)
     # Conecta no IP validado; em HTTPS, o SNI e a verificação do certificado usam o nome original.
@@ -129,10 +143,7 @@ async def ler_pagina(url: str, origem: str = "busca_web") -> Fonte:
             html = (await ler_limitado(response)).decode(response.encoding or "utf-8", errors="replace")
     soup = BeautifulSoup(html, "html.parser")
     titulo = soup.title.get_text(" ", strip=True) if soup.title else urlparse(url).hostname or url
-    data = None
-    meta = soup.find("meta", attrs={"property": "article:published_time"})
-    if meta and meta.get("content"):
-        data = str(meta["content"])[:10]
+    data = data_da_pagina(soup)
     for element in soup(["script", "style", "nav", "footer", "header", "aside", "form"]):
         element.decompose()
     main = soup.find("article") or soup.find("main") or soup.body or soup

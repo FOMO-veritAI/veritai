@@ -401,6 +401,23 @@ def test_requisicoes_pedem_resposta_sem_compressao():
     assert modulo_fontes.CABECALHOS["Accept-Encoding"] == "identity"
 
 
+@pytest.mark.parametrize(
+    ("metas", "esperada"),
+    [
+        ('<meta property="article:published_time" content="2026-10-06T23:51:00-03:00">', "2026-10-06"),
+        # Plone (gov.br): o início de valid_range é a publicação e vale mais que a criação.
+        ('<meta name="DC.date.created" content="2026-10-01T10:00:00-03:00"><meta name="DC.date.valid_range" content="2026/10/06 - ">', "2026-10-06"),
+        ('<meta name="DC.date.created" content="2026-10-01T10:00:00-03:00">', "2026-10-01"),
+        ('<meta name="DC.date.valid_range" content=" - "><meta name="DC.date.modified" content="2026-10-02">', None),
+        ("", None),
+    ],
+)
+def test_data_da_pagina_le_article_e_plone(metas, esperada):
+    from bs4 import BeautifulSoup
+
+    assert modulo_fontes.data_da_pagina(BeautifulSoup(f"<html><head>{metas}</head></html>", "html.parser")) == esperada
+
+
 @pytest.mark.skipif(shutil.which("git") is None, reason="git não instalado")
 def test_maestri_fica_fora_do_git():
     raiz = Path(__file__).resolve().parents[1]
