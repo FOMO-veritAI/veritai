@@ -16,7 +16,7 @@ Regras (todas de operação, não validadas em dados rotulados revisados):
 import math
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"]
@@ -28,10 +28,13 @@ NAO_ENTIDADES = {
     "o", "a", "os", "as", "em", "no", "na", "nos", "nas", "de", "do", "da", "dos", "das", "segundo", "segunda", "entre", "há",
     "um", "uma", "para", "com", "por", "pelo", "pela", "se", "que", "e", "ou", "nesta", "neste", "este", "esta", "esse", "essa",
     "frente", "ante", "até", "após", "desde", "mais", "menos", "cerca", "apenas", *MESES,
+    # O país fica implícito nas estatísticas nacionais ("taxa de desocupação" = do Brasil).
+    "brasil",
 }
 # Entidades que a fonte pode citar por outro termo.
-EQUIVALENTES = {"brasil": ("brasil", "país", "nacional", "brasileiro", "brasileira", "brasileiros", "brasileiras")}
-QUEDA = re.compile(r"\b(ca[ií]\w*|recu\w*|queda\w*|diminu\w*|redu[çz]\w*|retra\w*|baix\w*|defla\w*|negativ\w*|perd\w*|encolh\w*)\b", re.IGNORECASE)
+EQUIVALENTES: dict[str, tuple[str, ...]] = {}
+QUEDA = re.compile(r"\b(ca[ií]\w*|caem|recu\w*|queda\w*|diminu\w*|redu[çz]\w*|retra\w*|baix\w*|defla\w*|negativ\w*|perd\w*|encolh\w*)\b", re.IGNORECASE)
+COMPARACAO = re.compile(r"\b(?:frente|ante|em relação|comparad\w*|abaixo|acima|contra|do que|após)\b", re.IGNORECASE)
 FUTURO = re.compile(r"\b(ser[áã]o?|v[ãa]o?|dever[áã]o?|deve|devem|previst\w*|pr[óo]xim\w*|a partir de)\b", re.IGNORECASE)
 
 # "milh" antes de "mil": "milhões" também começa com "mil".
@@ -178,6 +181,8 @@ class Quantidade:
     unidade: str  # "pct", "pp" ou ""
     casas: int | None  # casas decimais escritas; None para inteiros
     multiplicador: float = 1.0
+    inicio: int = field(default=0, compare=False)
+    fim: int = field(default=0, compare=False)
 
 
 def quantidades(texto: str) -> list[Quantidade]:
@@ -196,8 +201,52 @@ def quantidades(texto: str) -> list[Quantidade]:
         valor = float(inteiro.replace(".", "") + ("." + decimal if decimal else ""))
         tipo = "pct" if unidade == "%" else "pp" if unidade.startswith(("p.", "ponto")) else ""
         multiplicador = next((m for prefixo, m in MULTIPLICADORES.items() if unidade.startswith(prefixo)), 1.0)
-        resultado.append(Quantidade(valor * multiplicador, bool(sinal), tipo, len(decimal) if decimal else None, multiplicador))
+        resultado.append(Quantidade(valor * multiplicador, bool(sinal), tipo, len(decimal) if decimal else None, multiplicador, achado.start(), achado.end()))
     return resultado
+
+
+@dataclass
+class Contexto:
+    """O que cerca uma quantidade na frase: períodos do seu trecho e direção (queda ou não)."""
+
+    periodos: Periodos
+    queda: bool
+
+
+def frases(texto: str) -> list[tuple[int, int]]:
+    # Divide só antes de maiúscula, para não partir em "p.p. abaixo".
+    limites = [0] + [m.end() for m in re.finditer(r"[.!?]\s+(?=[A-ZÀ-Ý])", texto)] + [len(texto)]
+    return list(zip(limites, limites[1:]))
+
+
+def contextos(texto: str, qs: list[Quantidade]) -> list[Contexto]:
+    resultado = []
+    for inicio_frase, fim_frase in frases(texto):
+        da_frase = [q for q in qs if inicio_frase <= q.inicio < fim_frase]
+        for i, q in enumerate(da_frase):
+            antes = da_frase[i - 1].fim if i else inicio_frase
+            depois = da_frase[i + 1].inicio if i + 1 < len(da_frase) else fim_frase
+            # Períodos de comparação ("frente a julho", "acima de maio") não são o período do número.
+            anterior_ao_numero = COMPARACAO.split(texto[antes : q.inicio])[-1]
+            posterior_ao_numero = COMPARACAO.split(texto[q.fim : depois])[0]
+            trecho = anterior_ao_numero + " " + posterior_ao_numero
+            proprios = periodos(trecho)
+            # Sem período no próprio trecho, vale o da frase ("é de 5,3% e ... no trimestre encerrado em agosto").
+            if not (proprios.meses or proprios.trimestres):
+                proprios = periodos(texto[inicio_frase:fim_frase])
+            # Direção: sinal ou verbo de queda logo antes do número; "caiu para 5,3%" é nível, não variação.
+            anterior = texto[antes : q.inicio]
+            queda = QUEDA.search(anterior)
+            resultado.append(Contexto(proprios, q.negativo or bool(queda and not re.search(r"\bpara\b", anterior[queda.end() :]))))
+    return resultado
+
+
+def mesmo_periodo(alegado: Periodos, encontrado: Periodos) -> bool:
+    if alegado.meses and encontrado.meses:
+        return bool(alegado.meses & encontrado.meses)
+    if alegado.trimestres and encontrado.trimestres:
+        return bool(alegado.trimestres & encontrado.trimestres)
+    return True
 
 
 def mesmo_valor(alegado: Quantidade, encontrado: Quantidade) -> bool:
@@ -211,22 +260,23 @@ def mesmo_valor(alegado: Quantidade, encontrado: Quantidade) -> bool:
     return len(alegado_txt) == len(encontrado_txt) and encontrado_txt.startswith(alegado_txt.rstrip("0") or "0")
 
 
-def sinal_compativel(alegado: Quantidade, encontrado: Quantidade, afirmacao: str, janela: str) -> bool:
-    if alegado.negativo == encontrado.negativo:
-        return True
-    # "caiu 0,25%" equivale a "-0,25%", e "recuou 0,6%" a "variou -0,6%".
-    if encontrado.negativo:
-        return bool(QUEDA.search(afirmacao))
-    return bool(QUEDA.search(janela))
-
-
 def numero_ausente(afirmacao: str, janela: str) -> Quantidade | None:
-    """A primeira quantidade da afirmação sem correspondente na janela (valor, sinal e unidade)."""
-    da_janela = quantidades(janela)
-    for alegado in quantidades(afirmacao):
+    """A primeira quantidade da afirmação sem correspondente na janela.
+
+    Correspondente: mesmo valor e unidade (% ou p.p.), mesma direção ("caiu 0,25%" = "-0,25%";
+    "subiram 0,8%" ≠ "caiu 0,8%") e, se a afirmação cita mês ou trimestre, ligado a esse período
+    na janela ("-0,32% em agosto" não sustenta "-0,32% em julho").
+    """
+    alegados, da_janela = quantidades(afirmacao), quantidades(janela)
+    ctx_alegados, ctx_janela = contextos(afirmacao, alegados), contextos(janela, da_janela)
+    periodo_alegado = periodos(afirmacao)
+    for alegado, ctx_a in zip(alegados, ctx_alegados):
         if not any(
-            (not alegado.unidade or alegado.unidade == q.unidade) and mesmo_valor(alegado, q) and sinal_compativel(alegado, q, afirmacao, janela)
-            for q in da_janela
+            (not alegado.unidade or alegado.unidade == q.unidade)
+            and mesmo_valor(alegado, q)
+            and ctx_a.queda == ctx_q.queda
+            and mesmo_periodo(periodo_alegado, ctx_q.periodos)
+            for q, ctx_q in zip(da_janela, ctx_janela)
         ):
             return alegado
     return None

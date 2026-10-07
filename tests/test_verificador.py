@@ -85,6 +85,16 @@ def test_quantidades(texto, esperadas):
         ("O IPCA-15 foi de 0,7%.", "O IPCA-15 foi de 0,70%.", False),
         ("A produção deve atingir 34,08 milhões de toneladas.", "Deverá atingir 34,08 milhões de toneladas.", False),
         ("O público é de 60 anos ou mais.", "Pessoas com 85 anos ou mais.", True),
+        # Direção: "subiram" não casa com "caiu"; "caiu para" é nível, não variação.
+        ("As vendas subiram 0,8% em julho.", "As vendas caíram 0,8% em julho.", True),
+        ("As vendas subiram 0,8% em julho.", "Em julho, vendas no varejo caem 0,8%.", True),
+        ("O custo caiu em 25 das 27 capitais.", "O custo diminuiu em 25 das 27 capitais.", False),
+        ("A taxa caiu para 5,3%.", "A taxa de desocupação (5,3%) ficou estável.", False),
+        # Período: o número da janela precisa estar ligado ao período da afirmação.
+        ("O IPCA de julho de 2026 foi de -0,32%.", "O IPCA de agosto de 2026 foi de -0,32%, abaixo do 0,07% registrado em julho de 2026.", True),
+        ("O IPCA de julho de 2026 foi de 0,07%.", "O IPCA de agosto de 2026 foi de -0,32%, abaixo do 0,07% registrado em julho de 2026.", False),
+        ("A taxa foi de 5,3% no trimestre encerrado em maio de 2026.", "A taxa (5,3%) no trimestre de junho de 2026 a agosto de 2026 caiu frente ao encerrado em maio de 2026 (5,6%).", True),
+        ("A taxa foi de 5,3% no trimestre encerrado em agosto de 2026.", "Taxa é de 5,3% e subutilização é de 13,1% no trimestre encerrado em agosto de 2026.", False),
     ],
 )
 def test_numero_ausente(afirmacao, janela, ausente):
