@@ -15,6 +15,7 @@ LIMIARES = CONFIG["limiares_triagem"]
 SELECAO = CONFIG["selecao"]
 COPIAS = CONFIG["copias"]
 BASE = CONFIG["base"]
+VERIFICADOR = CONFIG["verificador"]
 
 GOOGLE_FACT_CHECK_API_KEY = os.getenv("GOOGLE_FACT_CHECK_API_KEY", "").strip()
 

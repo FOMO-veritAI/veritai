@@ -12,7 +12,8 @@ import numpy
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from .config import LIMIARES, SELECAO, nome_perfil, perfil
+from . import verificador
+from .config import LIMIARES, SELECAO, VERIFICADOR, nome_perfil, perfil
 from .fontes import Fonte
 
 
@@ -27,6 +28,7 @@ class TrechoAvaliado:
     relacao: str  # entailment | contradiction | neutral: rótulo mais provável na janela
     pontuacao_nli: float  # probabilidade do rótulo em relacao
     probabilidades: dict[str, float] = field(default_factory=dict)
+    bloqueios: dict[str, str] = field(default_factory=dict)  # rótulos do NLI neutralizados pelo verificador, com o motivo
 
 
 class Comparador(Protocol):
@@ -204,21 +206,43 @@ class ComparadorNLI:
                 pares, similaridades, SELECAO["trechos_por_fonte"], SELECAO["max_fontes_por_afirmacao"], LIMIARES["similaridade_selecao"]
             )
             tempos["selecao"] = relogio() - inicio
+        bloqueadas: list[dict] = []
         if selecionadas:
-            entradas = [(janela, afirmacao) for _, itens in selecionadas for janela, _ in itens]
+            ativo = VERIFICADOR["ativo"]
+            # O NLI lê a janela com o ano nos meses citados sem ano; o texto exibido no relatório não muda.
+            premissas = {
+                (id(fonte), janela): verificador.anotar_ano(janela, fonte.data_publicacao) if ativo and VERIFICADOR["anotar_ano"] else janela
+                for fonte, itens in selecionadas
+                for janela, _ in itens
+            }
+            entradas = [(premissas[(id(fonte), janela)], afirmacao) for fonte, itens in selecionadas for janela, _ in itens]
             inicio = relogio()
             probabilidades = self.modelos.classificar(entradas)
             tempos["nli"] = relogio() - inicio
             inicio = relogio()
             restantes = iter(probabilidades)
             for fonte, itens in selecionadas:
-                com_nli = [(janela, similaridade, next(restantes)) for janela, similaridade in itens]
-                for janela, _, nli in com_nli:
+                com_nli = []
+                motivos: dict[str, dict[str, str]] = {}
+                for janela, similaridade in itens:
+                    nli = next(restantes)
+                    if ativo:
+                        motivos[janela] = verificador.bloqueios(
+                            afirmacao, premissas[(id(fonte), janela)], fonte.texto_completo or fonte.texto, fonte.titulo, fonte.dominio
+                        )
+                        if motivos[janela]:
+                            bloqueadas.append({"fonte": fonte.titulo, "janela": janela, "nli_original": nli, "bloqueios": motivos[janela]})
+                            nli = verificador.ajustar(nli, motivos[janela])
+                    com_nli.append((janela, similaridade, nli))
                     avaliadas.setdefault((id(fonte), janela), []).append(nli)
-                resultado.extend(consolidar(fonte, com_nli))
+                consolidados = consolidar(fonte, com_nli)
+                for item in consolidados:
+                    item.bloqueios = motivos.get(item.trecho, {})
+                resultado.extend(consolidados)
             tempos["consolidacao"] = relogio() - inicio
         if rastro is not None:
             rastro.update(montar_rastro(self.perfil, fontes, pares, similaridades, avaliadas, resultado, tempos))
+            rastro["verificador"] = {"ativo": VERIFICADOR["ativo"], "bloqueios": bloqueadas}
         return resultado
 
 
