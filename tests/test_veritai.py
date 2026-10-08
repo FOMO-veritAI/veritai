@@ -738,3 +738,29 @@ def test_url_com_ipv6_literal_usa_colchetes_no_host(monkeypatch):
     pedidos = cliente_falso(monkeypatch, lambda _r: httpx.Response(200, headers={"content-type": "text/html"}, text=PAGINA))
     asyncio.run(modulo_fontes.ler_pagina("http://[2606:4700::1111]:80/x"))
     assert pedidos[0].headers["host"] == "[2606:4700::1111]:80"
+
+
+def test_nli_e_carregado_em_float32(monkeypatch):
+    """O transformers 5 carrega no tipo do checkpoint; o mDeBERTa da V1 vem em float16, lento em CPU."""
+    import sys
+    import types
+
+    class NLIFalso:
+        config = types.SimpleNamespace(id2label={0: "entailment", 1: "neutral", 2: "contradiction"})
+        tipo = "float16"
+
+        def float(self):
+            self.tipo = "float32"
+            return self
+
+        def eval(self):
+            return self
+
+    nli = NLIFalso()
+    transformers = types.SimpleNamespace(
+        AutoModelForSequenceClassification=types.SimpleNamespace(from_pretrained=lambda nome: nli),
+        AutoTokenizer=types.SimpleNamespace(from_pretrained=lambda nome: object()),
+    )
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setitem(sys.modules, "sentence_transformers", types.SimpleNamespace(SentenceTransformer=lambda nome, device: object()))
+    assert modulo_modelos.ModelosHF("v1")._carregar()[2].tipo == "float32"

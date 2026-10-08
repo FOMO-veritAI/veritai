@@ -151,7 +151,9 @@ class ModelosHF:
 
                     embedding = SentenceTransformer(self.config["embedding"], device="cpu")
                     tokenizer = AutoTokenizer.from_pretrained(self.config["nli"])
-                    nli = AutoModelForSequenceClassification.from_pretrained(self.config["nli"]).eval()
+                    # float32 explícito: o transformers 5 carrega no tipo do checkpoint, e o do mDeBERTa (V1) é
+                    # float16, cerca de 7 vezes mais lento em CPU.
+                    nli = AutoModelForSequenceClassification.from_pretrained(self.config["nli"]).float().eval()
                     self._carregados = embedding, tokenizer, nli, rotulos_nli(nli.config.id2label)
         return self._carregados
 
