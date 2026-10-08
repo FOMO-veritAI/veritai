@@ -36,6 +36,35 @@ def test_entidade_compara_palavra_inteira_e_aceita_dominio_e_equivalentes():
     assert v.entidade_ausente("A Bahia cresceu 6,5%.", "Goiás (6,5%) e Mato Grosso (5,8%).") == "Bahia"
 
 
+@pytest.mark.parametrize(
+    ("afirmacao", "documento", "ausente"),
+    [
+        # Nome composto: basta o último nome; nomes compostos ficam juntos.
+        ("A juíza Amy Coney Barrett foi confirmada.", "Barrett foi confirmada pelo Senado.", None),
+        ("Luiza Erundina foi eleita em São Paulo.", "Erundina venceu em Santos.", "São Paulo"),
+        # Equivalentes: sigla e nome por extenso; Covid e Covid-19.
+        ("Os EUA registraram queda.", "Os Estados Unidos registraram queda.", None),
+        ("A Covid matou mais idosos.", "A Covid-19 matou mais idosos.", None),
+        ("O IPCA de agosto foi de -0,40%.", "O IPCA-15 de agosto foi de -0,40%.", "IPCA"),
+        # Cargos, pronomes e meses com acento no meio da frase não são entidades.
+        ("Segundo o Presidente, a Lei foi aprovada em Março.", "A lei foi aprovada em março.", None),
+        # Texto gritado: palavras em maiúsculas não viram siglas.
+        ("PEDASTRIA é agora LEGAL na CALIFÓRNIA", "O projeto de lei trata de penas.", None),
+        ("O TSE aprovou a regra.", "O tribunal aprovou a regra.", "TSE"),
+    ],
+)
+def test_variantes_de_nome_na_regra_de_entidade(afirmacao, documento, ausente):
+    assert v.entidade_ausente(afirmacao, documento) == ausente
+
+
+def test_comparacao_na_afirmacao_nao_e_o_periodo_dela():
+    afirmacao = "O Irã acumulou dez vezes mais urânio do que tinha em 2016."
+    janela = "Em 2020, o estoque de urânio do Irã era dez vezes maior."
+    assert v.bloqueios(afirmacao, janela, janela) == {}
+    # Sem comparação, o ano explícito diferente continua divergente.
+    assert v.bloqueios("O Irã acumulou urânio em 2016.", janela, janela)["contradiction"] == "período divergente"
+
+
 def test_periodos_e_divergencia():
     agosto = v.periodos("A taxa no trimestre de junho a agosto de 2026 foi de 5,3%.")
     assert agosto.meses == {(8, 2026)}

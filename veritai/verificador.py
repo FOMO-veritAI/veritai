@@ -33,9 +33,28 @@ NAO_ENTIDADES = {
     "frente", "ante", "até", "após", "desde", "mais", "menos", "cerca", "apenas", *MESES,
     # O país fica implícito nas estatísticas nacionais ("taxa de desocupação" = do Brasil).
     "brasil",
+    # Cargos, termos genéricos e pronomes que aparecem com maiúscula no meio da frase ("o Presidente", "a Lei").
+    "presidente", "presidenta", "ministro", "ministra", "governador", "governadora", "senador", "senadora",
+    "deputado", "deputada", "prefeito", "prefeita", "juiz", "juíza", "lei", "decreto", "governo", "estado",
+    "ele", "ela", "eles", "elas",
 }
-# Entidades que a fonte pode citar por outro termo.
-EQUIVALENTES: dict[str, tuple[str, ...]] = {}
+# Entidades que a fonte pode citar por outro termo (chaves e valores sem acentos, em minúsculas).
+EQUIVALENTES: dict[str, tuple[str, ...]] = {
+    "eua": ("estados unidos", "us", "usa"),
+    "estados unidos": ("eua", "us", "usa"),
+    "us": ("eua", "estados unidos", "usa"),
+    "usa": ("eua", "estados unidos", "us"),
+    "reino unido": ("uk", "gra-bretanha"),
+    "onu": ("nacoes unidas",),
+    "oms": ("organizacao mundial da saude",),
+    "stf": ("supremo tribunal federal", "supremo"),
+    "tse": ("tribunal superior eleitoral",),
+    "pib": ("produto interno bruto",),
+    "suprema corte": ("supremo tribunal", "supreme court"),
+    # A comparação por palavra inteira separa "IPCA" de "IPCA-15"; aqui o sufixo não muda a entidade.
+    "covid": ("covid-19", "coronavirus", "sars-cov-2"),
+    "covid-19": ("covid", "coronavirus", "sars-cov-2"),
+}
 QUEDA = re.compile(r"\b(ca[ií]\w*|caem|recu\w*|queda\w*|diminu\w*|redu[çz]\w*|retra\w*|baix\w*|defla\w*|negativ\w*|perd\w*|encolh\w*)\b", re.IGNORECASE)
 COMPARACAO = re.compile(r"\b(?:frente|ante|em relação|comparad\w*|abaixo|acima|contra|do que|após|perdendo para|superando|superou)\b", re.IGNORECASE)
 # Limites do trecho de frase de um número: vírgula, ponto e vírgula, fim de parêntese e "e" ("408 em Leitura, 377 em Matemática e 409 em Ciências").
@@ -60,15 +79,21 @@ def tokens(texto: str) -> set[str]:
     return {sem_acentos(t) for t in re.findall(PALAVRA, texto)}
 
 
+# Comparadas sem acentos: "Março" e "Há" no meio da frase também não são entidades.
+NAO_ENTIDADES_NORMALIZADAS = {sem_acentos(p) for p in NAO_ENTIDADES}
+
+
 # ---------------------------------------------------------------- entidades
 
 
 def entidades_com_posicao(texto: str) -> list[tuple[str, int]]:
     """Nomes próprios e siglas, com a posição no texto: palavras com maiúscula fora do início da frase, siglas e códigos (IPCA-15)."""
     resultado = []
+    # Texto "gritado" ("PEDASTRIA é agora LEGAL na CALIFÓRNIA"): palavras em maiúsculas não são siglas.
+    gritado = any(len(p) > 6 and p.isupper() and not any(c.isdigit() for c in p) for p in re.findall(PALAVRA, texto))
     for achado in re.finditer(PALAVRA, texto):
         palavra = achado.group()
-        if not palavra[0].isupper() or sem_acentos(palavra) in NAO_ENTIDADES:
+        if not palavra[0].isupper() or sem_acentos(palavra) in NAO_ENTIDADES_NORMALIZADAS or (gritado and palavra.isupper()):
             continue
         sigla = len(palavra) >= 2 and (palavra.isupper() or any(c.isdigit() for c in palavra))
         inicio_de_frase = not texto[: achado.start()].strip() or texto[: achado.start()].rstrip().endswith((".", ":", "!", "?"))
@@ -81,16 +106,35 @@ def entidades(afirmacao: str) -> list[str]:
     return list(dict.fromkeys(palavra for palavra, _ in entidades_com_posicao(afirmacao)))
 
 
+def nomes(afirmacao: str) -> list[str]:
+    """Entidades com os nomes compostos juntos: "Amy Coney Barrett", "Estados Unidos", "São Paulo"."""
+    grupos: list[tuple[str, int]] = []  # (nome, fim)
+    for palavra, inicio in entidades_com_posicao(afirmacao):
+        if grupos and not afirmacao[grupos[-1][1] : inicio].strip():
+            grupos[-1] = (f"{grupos[-1][0]} {palavra}", inicio + len(palavra))
+        else:
+            grupos.append((palavra, inicio + len(palavra)))
+    return list(dict.fromkeys(nome for nome, _ in grupos))
+
+
 def entidade_ausente(afirmacao: str, documento: str, titulo: str = "", dominio: str = "") -> str | None:
-    """A primeira entidade da afirmação que não aparece no documento, no título nem no domínio da fonte."""
-    presentes = tokens(documento) | tokens(titulo)
-    dominio = sem_acentos(dominio)
-    for entidade in entidades(afirmacao):
-        chave = sem_acentos(entidade)
-        aceitas = EQUIVALENTES.get(chave, (chave,))
-        # Comparação por palavra inteira: "IPCA" não está em "IPCA-15".
-        if not any(sem_acentos(a) in presentes for a in aceitas) and chave not in dominio.split("."):
-            return entidade
+    """A primeira entidade da afirmação que não aparece no documento, no título nem no domínio da fonte.
+
+    Um nome composto basta pelo último nome ("Barrett" por "Amy Barrett"); siglas e nomes podem vir
+    por um equivalente (EUA = Estados Unidos).
+    """
+    texto = sem_acentos(f"{documento} {titulo}")
+    partes_do_dominio = set(sem_acentos(dominio).split("."))
+
+    def presente(termo: str) -> bool:
+        # Comparação por palavra inteira, sem atravessar hífen: "IPCA" não está em "IPCA-15".
+        return re.search(rf"(?<![\w-]){re.escape(termo)}(?![\w-])", texto) is not None
+
+    for nome in nomes(afirmacao):
+        chave = sem_acentos(nome)
+        aceitas = (chave, chave.split()[-1], *EQUIVALENTES.get(chave, ()))
+        if not any(presente(a) for a in aceitas) and not set(chave.split()) & partes_do_dominio:
+            return nome
     return None
 
 
@@ -373,7 +417,7 @@ def numero_ausente(afirmacao: str, janela: str, periodo_documento: str | None = 
     ctx_alegados, ctx_janela = contextos(afirmacao, alegados), contextos(janela, da_janela, periodos_da_referencia(periodo_documento))
     ent_alegados, ent_janela = ligadas(afirmacao, alegados), ligadas(janela, da_janela)
     todas_da_janela = set().union(*ent_janela)
-    periodo_alegado = periodos(afirmacao)
+    periodo_alegado = periodos(sem_comparacoes(afirmacao))
     for alegado, ctx_a, ent_a in zip(alegados, ctx_alegados, ent_alegados):
         if not any(
             (not alegado.unidade or alegado.unidade == q.unidade)
@@ -400,7 +444,8 @@ def bloqueios(
     if entidade := entidade_ausente(afirmacao, documento, titulo, dominio):
         motivo = f"entidade ausente: {entidade}"
         return {"entailment": motivo, "contradiction": motivo}
-    da_afirmacao, da_janela = periodos(afirmacao), periodos(sem_comparacoes(janela))
+    # Comparações saem dos dois lados: "dez vezes mais do que em 2016" não é sobre 2016.
+    da_afirmacao, da_janela = periodos(sem_comparacoes(afirmacao)), periodos(sem_comparacoes(janela))
     if periodo_divergente(da_afirmacao, da_janela):
         return {"entailment": "período divergente", "contradiction": "período divergente"}
     if da_janela.vazio and documento_de_outro_periodo(da_afirmacao, periodos_da_referencia(periodo_documento)):
