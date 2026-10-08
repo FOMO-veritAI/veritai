@@ -106,12 +106,17 @@ def entidades(afirmacao: str) -> list[str]:
     return list(dict.fromkeys(palavra for palavra, _ in entidades_com_posicao(afirmacao)))
 
 
+# Conectivos dentro de um nome: "Índice de Preços ao Produtor", "Mato Grosso do Sul". O "e" fica de fora
+# para não juntar "Lula e Bolsonaro".
+CONECTIVOS_DE_NOME = re.compile(r"\s*(?:\s(?:de|da|do|das|dos|ao|à)\s)?\s*", re.IGNORECASE)
+
+
 def nomes(afirmacao: str) -> list[str]:
-    """Entidades com os nomes compostos juntos: "Amy Coney Barrett", "Estados Unidos", "São Paulo"."""
+    """Entidades com os nomes compostos juntos: "Amy Coney Barrett", "Estados Unidos", "Índice de Preços ao Produtor"."""
     grupos: list[tuple[str, int]] = []  # (nome, fim)
     for palavra, inicio in entidades_com_posicao(afirmacao):
-        if grupos and not afirmacao[grupos[-1][1] : inicio].strip():
-            grupos[-1] = (f"{grupos[-1][0]} {palavra}", inicio + len(palavra))
+        if grupos and CONECTIVOS_DE_NOME.fullmatch(afirmacao[grupos[-1][1] : inicio]):
+            grupos[-1] = (f"{grupos[-1][0]}{afirmacao[grupos[-1][1] : inicio]}{palavra}", inicio + len(palavra))
         else:
             grupos.append((palavra, inicio + len(palavra)))
     return list(dict.fromkeys(nome for nome, _ in grupos))
@@ -133,7 +138,8 @@ def ausentes(afirmacao: str, documento: str, titulo: str = "", dominio: str = ""
     resultado = []
     for nome in nomes(afirmacao):
         chave = sem_acentos(nome)
-        aceitas = (chave, chave.split()[-1], *EQUIVALENTES.get(chave, ()))
+        ultima = chave.split()[-1]
+        aceitas = (chave, ultima, *EQUIVALENTES.get(chave, ()), *EQUIVALENTES.get(ultima, ()))
         if not any(presente(a) for a in aceitas) and not set(chave.split()) & partes_do_dominio:
             resultado.append(nome)
     return resultado

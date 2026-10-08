@@ -42,6 +42,11 @@ def test_entidade_compara_palavra_inteira_e_aceita_dominio_e_equivalentes():
         # Nome composto: basta o último nome; nomes compostos ficam juntos.
         ("A juíza Amy Coney Barrett foi confirmada.", "Barrett foi confirmada pelo Senado.", None),
         ("Luiza Erundina foi eleita em São Paulo.", "Erundina venceu em Santos.", "São Paulo"),
+        # Nome com conectivo é um nome só, identificado pela última palavra.
+        ("O Índice de Preços ao Produtor subiu 0,66%.", "O Índice Nacional de Preços ao Consumidor subiu 0,44%.", "Índice de Preços ao Produtor"),
+        ("A soja de Mato Grosso do Sul cresceu.", "Em Mato Grosso do Sul, a soja cresceu.", None),
+        ("No debate, Lula e Bolsonaro discutiram.", "Bolsonaro discutiu.", "Lula"),
+        ("A Suprema Corte dos EUA decidiu.", "A Suprema Corte dos Estados Unidos decidiu.", None),
         # Equivalentes: sigla e nome por extenso; Covid e Covid-19.
         ("Os EUA registraram queda.", "Os Estados Unidos registraram queda.", None),
         ("A Covid matou mais idosos.", "A Covid-19 matou mais idosos.", None),
@@ -238,6 +243,10 @@ def test_alternativa_so_bloqueia_contradicao_em_documento_fora_do_tema():
     julho = "O IPCA de julho de 2026 foi de 0,07%."
     assert v.fora_do_tema(ipca, julho, periodo_documento="2026-07")
     assert set(v.bloqueios(ipca, julho, julho, periodo_documento="2026-07", contradicao_so_fora_do_tema=True)) == {"entailment", "contradiction"}
+    # Índice de nome parecido não é o mesmo assunto: o IPCA não trata do IPP.
+    ipp = "O Índice de Preços ao Produtor de setembro de 2024 foi de 0,66%."
+    ipca_set = "O Índice Nacional de Preços ao Consumidor Amplo (IPCA) de setembro foi de 0,44%."
+    assert v.fora_do_tema(ipp, ipca_set)
     # Mesmo release, frase sobre outro mês: no tema, só o apoio é bloqueado.
     assert v.bloqueios(ipca, julho, julho, periodo_documento="2026-08", contradicao_so_fora_do_tema=True) == {"entailment": "período divergente"}
 
