@@ -98,12 +98,28 @@ def test_quantidades(texto, esperadas):
         # Período de comparação não é o período do número; "caiu de X para Y" são níveis.
         ("O superávit foi de US$ 7,74 bilhões em setembro de 2026.", "Superávit: US$ 7,74 bilhões (+146,4% ante setembro de 2025); Exportações: US$ 34,42 bilhões.", False),
         ("A diferença caiu de 102 para 58 pontos.", "A diferença passou de 102 para 58 pontos.", False),
+        # Entidade: o número da janela não pode estar ligado a outra entidade que a da afirmação.
+        ("No Pisa 2025, o Brasil fez 408 pontos em Matemática.", "No Pisa 2025, o Brasil registrou 408 pontos em Leitura, 377 em Matemática e 409 em Ciências.", True),
+        ("No Pisa 2025, o Brasil fez 377 pontos em Matemática.", "No Pisa 2025, o Brasil registrou 408 pontos em Leitura, 377 em Matemática e 409 em Ciências.", False),
+        ("Mato Grosso cresceu 6,5%.", "Os destaques foram Goiás (6,5%) e Mato Grosso (5,8%).", True),
+        ("A taxa no Sul foi de 8%.", "A taxa foi de 8% no Nordeste e de 5% no Sul.", True),
+        # Só a fonte ou outro nome da grandeza ao lado do número não bloqueia.
+        ("O IPCA foi de 0,5%.", "A inflação foi de 0,5% segundo o IBGE.", False),
+        ("O IPCA de dezembro teve alta de 0,33%.", "O Índice Nacional de Preços ao Consumidor Amplo (IPCA) de dezembro teve alta de 0,33%.", False),
     ],
 )
 
 
 def test_numero_ausente(afirmacao, janela, ausente):
     assert (v.numero_ausente(afirmacao, janela) is not None) == ausente
+
+
+def test_entidades_ligadas_a_cada_numero():
+    janela = "No Pisa 2025, o Brasil registrou 408 pontos em Leitura, 377 em Matemática e 409 em Ciências."
+    assert v.ligadas(janela, v.quantidades(janela)) == [{"leitura"}, {"matematica"}, {"ciencias"}]
+    # Entidade separada do número por vírgula não fica ligada a ele.
+    texto = "Em Leitura, a diferença passou de 102 para 58 pontos."
+    assert v.ligadas(texto, v.quantidades(texto)) == [set(), set()]
 
 
 def test_periodo_de_comparacao_nao_torna_a_janela_divergente():

@@ -10,7 +10,8 @@ Regras (todas de operação, não validadas em dados rotulados revisados):
 - período: se a afirmação e a janela citam períodos explícitos (mês e ano, trimestre e
   ano, ciclo ou ano solto) e nenhum coincide, a janela não apoia nem contradiz;
 - número: só há apoio se cada quantidade da afirmação aparece na janela, com o mesmo
-  sinal e a mesma unidade (% ou p.p.).
+  sinal e a mesma unidade (% ou p.p.) e sem estar ligada a outra entidade ("408 pontos em
+  Leitura" não sustenta "408 pontos em Matemática").
 """
 
 import math
@@ -35,6 +36,8 @@ NAO_ENTIDADES = {
 EQUIVALENTES: dict[str, tuple[str, ...]] = {}
 QUEDA = re.compile(r"\b(ca[ií]\w*|caem|recu\w*|queda\w*|diminu\w*|redu[çz]\w*|retra\w*|baix\w*|defla\w*|negativ\w*|perd\w*|encolh\w*)\b", re.IGNORECASE)
 COMPARACAO = re.compile(r"\b(?:frente|ante|em relação|comparad\w*|abaixo|acima|contra|do que|após|perdendo para|superando|superou)\b", re.IGNORECASE)
+# Limites do trecho de frase de um número: vírgula, ponto e vírgula, fim de parêntese e "e" ("408 em Leitura, 377 em Matemática e 409 em Ciências").
+SEPARADOR = re.compile(r"[,;)]|\s+e\s+")
 FUTURO = re.compile(r"\b(ser[áã]o?|v[ãa]o?|dever[áã]o?|deve|devem|previst\w*|pr[óo]xim\w*|a partir de)\b", re.IGNORECASE)
 
 # "milh" antes de "mil": "milhões" também começa com "mil".
@@ -58,18 +61,22 @@ def tokens(texto: str) -> set[str]:
 # ---------------------------------------------------------------- entidades
 
 
-def entidades(afirmacao: str) -> list[str]:
-    """Nomes próprios e siglas: palavras com maiúscula fora do início da frase, siglas e códigos (IPCA-15)."""
+def entidades_com_posicao(texto: str) -> list[tuple[str, int]]:
+    """Nomes próprios e siglas, com a posição no texto: palavras com maiúscula fora do início da frase, siglas e códigos (IPCA-15)."""
     resultado = []
-    for achado in re.finditer(PALAVRA, afirmacao):
+    for achado in re.finditer(PALAVRA, texto):
         palavra = achado.group()
         if not palavra[0].isupper() or sem_acentos(palavra) in NAO_ENTIDADES:
             continue
         sigla = len(palavra) >= 2 and (palavra.isupper() or any(c.isdigit() for c in palavra))
-        inicio_de_frase = not afirmacao[: achado.start()].strip() or afirmacao[: achado.start()].rstrip().endswith((".", ":", "!", "?"))
+        inicio_de_frase = not texto[: achado.start()].strip() or texto[: achado.start()].rstrip().endswith((".", ":", "!", "?"))
         if sigla or not inicio_de_frase:
-            resultado.append(palavra)
-    return list(dict.fromkeys(resultado))
+            resultado.append((palavra, achado.start()))
+    return resultado
+
+
+def entidades(afirmacao: str) -> list[str]:
+    return list(dict.fromkeys(palavra for palavra, _ in entidades_com_posicao(afirmacao)))
 
 
 def entidade_ausente(afirmacao: str, documento: str, titulo: str = "", dominio: str = "") -> str | None:
@@ -248,6 +255,31 @@ def contextos(texto: str, qs: list[Quantidade]) -> list[Contexto]:
     return resultado
 
 
+def ligadas(texto: str, qs: list[Quantidade]) -> list[set[str]]:
+    """Entidades ligadas a cada quantidade: as do seu trecho de frase, entre o separador mais próximo
+    de cada lado, sem passar por outro número ("408 pontos em Leitura" → {"leitura"})."""
+    achadas = [(sem_acentos(palavra), inicio) for palavra, inicio in entidades_com_posicao(texto)]
+    resultado = []
+    for inicio_frase, fim_frase in frases(texto):
+        da_frase = [q for q in qs if inicio_frase <= q.inicio < fim_frase]
+        for i, q in enumerate(da_frase):
+            antes = da_frase[i - 1].fim if i else inicio_frase
+            depois = da_frase[i + 1].inicio if i + 1 < len(da_frase) else fim_frase
+            esquerda = max([s.end() for s in SEPARADOR.finditer(texto, antes, q.inicio)], default=antes)
+            direita = next((s.start() for s in SEPARADOR.finditer(texto, q.fim, depois)), depois)
+            resultado.append({e for e, inicio in achadas if esquerda <= inicio < direita and not q.inicio <= inicio < q.fim})
+    return resultado
+
+
+def outra_entidade(alegadas: set[str], encontradas: set[str], todas_da_janela: set[str]) -> bool:
+    """O número da janela está ligado a outra entidade, e a da afirmação está ligada a outro número da janela.
+
+    Exigir as duas coisas evita bloquear quando a janela só cita a fonte ("0,5%, segundo o IBGE")
+    ou nomeia a grandeza de outro jeito.
+    """
+    return bool(encontradas) and not alegadas & encontradas and bool(alegadas & todas_da_janela)
+
+
 def mesmo_periodo(alegado: Periodos, encontrado: Periodos) -> bool:
     if alegado.meses and encontrado.meses:
         return bool(alegado.meses & encontrado.meses)
@@ -271,19 +303,23 @@ def numero_ausente(afirmacao: str, janela: str) -> Quantidade | None:
     """A primeira quantidade da afirmação sem correspondente na janela.
 
     Correspondente: mesmo valor e unidade (% ou p.p.), mesma direção ("caiu 0,25%" = "-0,25%";
-    "subiram 0,8%" ≠ "caiu 0,8%") e, se a afirmação cita mês ou trimestre, ligado a esse período
-    na janela ("-0,32% em agosto" não sustenta "-0,32% em julho").
+    "subiram 0,8%" ≠ "caiu 0,8%"), se a afirmação cita mês ou trimestre, ligado a esse período
+    na janela ("-0,32% em agosto" não sustenta "-0,32% em julho") e não ligado a outra entidade
+    ("408 em Leitura, 377 em Matemática" não sustenta "408 em Matemática").
     """
     alegados, da_janela = quantidades(afirmacao), quantidades(janela)
     ctx_alegados, ctx_janela = contextos(afirmacao, alegados), contextos(janela, da_janela)
+    ent_alegados, ent_janela = ligadas(afirmacao, alegados), ligadas(janela, da_janela)
+    todas_da_janela = set().union(*ent_janela)
     periodo_alegado = periodos(afirmacao)
-    for alegado, ctx_a in zip(alegados, ctx_alegados):
+    for alegado, ctx_a, ent_a in zip(alegados, ctx_alegados, ent_alegados):
         if not any(
             (not alegado.unidade or alegado.unidade == q.unidade)
             and mesmo_valor(alegado, q)
             and ctx_a.queda == ctx_q.queda
             and mesmo_periodo(periodo_alegado, ctx_q.periodos)
-            for q, ctx_q in zip(da_janela, ctx_janela)
+            and not outra_entidade(ent_a, ent_q, todas_da_janela)
+            for q, ctx_q, ent_q in zip(da_janela, ctx_janela, ent_janela)
         ):
             return alegado
     return None
