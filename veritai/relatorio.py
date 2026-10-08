@@ -114,6 +114,29 @@ class RelatorioAfirmacao(BaseModel):
         return self
 
 
+class PedidoExtracao(BaseModel):
+    noticia: Noticia
+    maximo: int = Field(default=10, ge=1, le=10)
+
+
+class AfirmacaoCandidata(BaseModel):
+    """Afirmação proposta pela extração; só vai para o /analisar depois que o publicador confirma."""
+
+    texto: str  # pronta para o /analisar (10 a 500 caracteres), com as datas completadas
+    trecho_origem: str  # frase literal da notícia
+    posicao: int  # 0 = título; depois, a ordem da frase no texto
+    pontuacao: int
+    sinais: list[str]
+    alertas: list[str]
+    atribuicao: str | None
+
+
+class RelatorioExtracao(BaseModel):
+    afirmacoes: list[AfirmacaoCandidata]
+    avisos: list[str]
+    versoes: dict[str, str]
+
+
 class RelatorioAnalise(BaseModel):
     afirmacoes: list[RelatorioAfirmacao]
     avisos: list[str]

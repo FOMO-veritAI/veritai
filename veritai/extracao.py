@@ -21,9 +21,13 @@ from dataclasses import dataclass, field
 
 from datetime import date, timedelta
 
+from .config import CONFIG
+from .relatorio import AfirmacaoCandidata, PedidoExtracao, RelatorioExtracao
 from .verificador import MESES, anotar_ano, nomes, periodos, quantidades, sem_acentos
 
+VERSAO = "regras-2026-10-08"
 MAXIMO_DE_AFIRMACOES = 10  # o mesmo limite do /analisar
+CARACTERES_MINIMOS, CARACTERES_MAXIMOS = 10, 500  # limites de cada afirmação no /analisar
 PALAVRAS_MINIMAS, PALAVRAS_MAXIMAS = 6, 70
 
 # Abreviações que terminam em ponto sem fim de frase (comparadas em minúsculas).
@@ -36,12 +40,16 @@ ROTINA = re.compile(
     r"siga|clique|assista|veja (?:também|mais)|saiba mais|fonte|colaboradores|assessoria de comunicação)\b",
     re.IGNORECASE,
 )
+# "Segundo" só é atribuição antes de artigo, nome ou "dados"/"levantamento": "segundo maior saldo" é ordinal.
+SEGUNDO = r"\b[Ss]egundo\s+(?-i:(?=[oa]s?\s|[A-ZÀ-Ý]|dados\b|levantamento\b|pesquisa\b|estimativas?\b))"
 ATRIBUICAO = re.compile(
-    r"\b(?:segundo|de acordo com|conforme|informou|informa|afirmou|afirma|disse|diz|declarou|divulgou|divulga|anunciou|"
+    SEGUNDO + r"|\b(?:de acordo com|conforme|informou|informa|afirmou|afirma|disse|diz|declarou|divulgou|divulga|anunciou|"
     r"aponta|apontam|mostra|mostram|revela|revelam|estima|estimam|indica|indicam)\b",
     re.IGNORECASE,
 )
-FONTE_ATRIBUIDA = re.compile(r"\b(?:segundo|de acordo com|conforme)\s+(?:[oa]s?\s+)?([^,;.]{2,60})", re.IGNORECASE)
+FONTE_ATRIBUIDA = re.compile(
+    r"(?:" + SEGUNDO + r"|\b[Dd]e acordo com\s+|\b[Cc]onforme\s+)(?:[oa]s?\s+)?((?:[A-ZÀ-Ý]|dados\b|levantamento\b|pesquisa\b|estimativas?\b)[^,;.]{1,59})"
+)
 VERBO_DE_FATO = re.compile(
     r"\b(?:cresc\w*|ca[ií]\w*|caem|recu\w*|sub\w*|aument\w*|diminu\w*|reduz\w*|registr\w*|atingi\w*|alcan[çc]\w*|aprov\w*|"
     r"sancion\w*|public\w*|lan[çc]\w*|inaugur\w*|invest\w*|destin\w*|liber\w*|arrecad\w*|morre\w*|vari\w*|"
@@ -57,7 +65,7 @@ OPINIAO = re.compile(
     r"excelente|maravilh\w*|lixo|canalha|bandid\w*)\b",
     re.IGNORECASE,
 )
-FUTURO = re.compile(r"\b(?:vai|v[ãa]o|ir[áã]o?|dever[áã]o?|deve|devem|pretende\w*|planej\w*|poder[áã]o?|promete\w*|espera-se|previst\w*)\b", re.IGNORECASE)
+FUTURO = re.compile(r"\b(?:vai|v[ãa]o|ser[áã]o?|ir[áã]o?|dever[áã]o?|deve|devem|pretende\w*|planej\w*|poder[áã]o?|promete\w*|espera-se|previst\w*)\b", re.IGNORECASE)
 # Começos que dependem da frase anterior ("Com isso", "Ele", "O índice").
 ANAFORA = re.compile(
     r"^(?:ele|ela|eles|elas|isso|isto|esse|essa|este|esta|com isso|além disso|já|também|o índice|a taxa|o indicador|a pesquisa|o resultado)\b",
@@ -197,9 +205,38 @@ def extrair(titulo: str, texto: str, data: str | None = None, maximo: int = MAXI
             continue
         fonte = FONTE_ATRIBUIDA.search(frase)
         texto_proposto = anotar_ano(datar(frase, data), data)
+        if not CARACTERES_MINIMOS <= len(texto_proposto) <= CARACTERES_MAXIMOS:
+            continue
         if texto_proposto != frase and "sem período: o verificador não confere a data" in alertas and not periodos(texto_proposto).vazio:
             alertas.remove("sem período: o verificador não confere a data")
             sinais.append("data completada")
         candidatas.append(Candidata(texto_proposto, frase, posicao, pontuacao, sinais, alertas, fonte.group(1).strip() if fonte else None))
     candidatas.sort(key=lambda c: (-c.pontuacao, c.posicao))
     return candidatas[:maximo]
+
+
+def propor(pedido: PedidoExtracao) -> RelatorioExtracao:
+    """Resposta do POST /extrair: candidatas para o publicador confirmar, editar ou descartar."""
+    noticia = pedido.noticia
+    avisos = ["Afirmações propostas por regras, sem verificação: confirme, edite ou descarte cada uma antes de analisar."]
+    data = (noticia.data or "").strip()
+    try:
+        data_valida = date.fromisoformat(data).isoformat() if re.fullmatch(r"\d{4}-\d{2}-\d{2}", data) else None
+    except ValueError:
+        data_valida = None
+    if not data_valida:
+        avisos.append("Sem data da notícia no formato AAAA-MM-DD: as datas relativas e os meses sem ano não foram completados.")
+    if not noticia.texto.strip():
+        avisos.append("A notícia veio sem texto: só o título foi considerado.")
+    candidatas = extrair(noticia.titulo, noticia.texto, data_valida, pedido.maximo)
+    return RelatorioExtracao(
+        afirmacoes=[
+            AfirmacaoCandidata(
+                texto=c.texto, trecho_origem=c.trecho_origem, posicao=c.posicao, pontuacao=c.pontuacao,
+                sinais=c.sinais, alertas=c.alertas, atribuicao=c.atribuicao,
+            )
+            for c in candidatas
+        ],
+        avisos=avisos,
+        versoes={"extracao": VERSAO, "config": CONFIG["versao_config"]},
+    )

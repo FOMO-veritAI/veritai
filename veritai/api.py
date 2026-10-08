@@ -7,7 +7,8 @@ from .config import caminho_base, perfil, versoes
 from .modelos import Comparador, ComparadorNLI
 from .pipeline import Buscador, analisar
 from .fontes import buscar_fontes
-from .relatorio import PedidoAnalise, RelatorioAnalise
+from .extracao import propor
+from .relatorio import PedidoAnalise, PedidoExtracao, RelatorioAnalise, RelatorioExtracao
 
 
 def criar_app(comparador: Comparador | None = None, buscador: Buscador = buscar_fontes, base: BaseEvidencias | None = None) -> FastAPI:
@@ -25,6 +26,11 @@ def criar_app(comparador: Comparador | None = None, buscador: Buscador = buscar_
     @app.post("/analisar", response_model=RelatorioAnalise)
     async def analisar_noticia(pedido: PedidoAnalise):
         return await analisar(pedido, comparador, buscador, base)
+
+    @app.post("/extrair", response_model=RelatorioExtracao)
+    def extrair_afirmacoes(pedido: PedidoExtracao):
+        # Só propõe; o publicador confirma as afirmações antes de chamar o /analisar.
+        return propor(pedido)
 
     return app
 
