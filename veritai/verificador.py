@@ -117,8 +117,8 @@ def nomes(afirmacao: str) -> list[str]:
     return list(dict.fromkeys(nome for nome, _ in grupos))
 
 
-def entidade_ausente(afirmacao: str, documento: str, titulo: str = "", dominio: str = "") -> str | None:
-    """A primeira entidade da afirmação que não aparece no documento, no título nem no domínio da fonte.
+def ausentes(afirmacao: str, documento: str, titulo: str = "", dominio: str = "") -> list[str]:
+    """As entidades da afirmação que não aparecem no documento, no título nem no domínio da fonte.
 
     Um nome composto basta pelo último nome ("Barrett" por "Amy Barrett"); siglas e nomes podem vir
     por um equivalente (EUA = Estados Unidos).
@@ -130,12 +130,27 @@ def entidade_ausente(afirmacao: str, documento: str, titulo: str = "", dominio: 
         # Comparação por palavra inteira, sem atravessar hífen: "IPCA" não está em "IPCA-15".
         return re.search(rf"(?<![\w-]){re.escape(termo)}(?![\w-])", texto) is not None
 
+    resultado = []
     for nome in nomes(afirmacao):
         chave = sem_acentos(nome)
         aceitas = (chave, chave.split()[-1], *EQUIVALENTES.get(chave, ()))
         if not any(presente(a) for a in aceitas) and not set(chave.split()) & partes_do_dominio:
-            return nome
-    return None
+            resultado.append(nome)
+    return resultado
+
+
+def entidade_ausente(afirmacao: str, documento: str, titulo: str = "", dominio: str = "") -> str | None:
+    """A primeira entidade da afirmação que não aparece na fonte."""
+    return next(iter(ausentes(afirmacao, documento, titulo, dominio)), None)
+
+
+def fora_do_tema(afirmacao: str, documento: str, titulo: str = "", dominio: str = "", periodo_documento: str | None = None) -> bool:
+    """O documento inteiro não trata da afirmação: é de outro período de referência (release de outro mês)
+    ou não cita nenhuma das entidades dela. Uma entidade trocada num documento sobre o mesmo assunto não basta."""
+    if documento_de_outro_periodo(periodos(sem_comparacoes(afirmacao)), periodos_da_referencia(periodo_documento)):
+        return True
+    todos = nomes(afirmacao)
+    return bool(todos) and len(ausentes(afirmacao, documento, titulo, dominio)) == len(todos)
 
 
 # ---------------------------------------------------------------- períodos
@@ -435,19 +450,33 @@ def numero_ausente(afirmacao: str, janela: str, periodo_documento: str | None = 
 
 
 def bloqueios(
-    afirmacao: str, janela: str, documento: str, titulo: str = "", dominio: str = "", periodo_documento: str | None = None
+    afirmacao: str,
+    janela: str,
+    documento: str,
+    titulo: str = "",
+    dominio: str = "",
+    periodo_documento: str | None = None,
+    contradicao_so_fora_do_tema: bool = False,
 ) -> dict[str, str]:
     """Rótulos do NLI que esta janela não pode sustentar, com o motivo: {"entailment": ..., "contradiction": ...}.
 
     periodo_documento é o período de referência da fonte ("2026-08"); só vale para janelas sem período próprio.
+    Com contradicao_so_fora_do_tema, entidade ausente e período divergente só bloqueiam a contradição quando o
+    documento inteiro não trata da afirmação: num documento sobre o mesmo assunto, a entidade ou a data trocada
+    pode ser a própria refutação ("embaixada francesa" × "embaixada alemã").
     """
-    if entidade := entidade_ausente(afirmacao, documento, titulo, dominio):
-        motivo = f"entidade ausente: {entidade}"
+
+    def bloqueio(motivo: str) -> dict[str, str]:
+        if contradicao_so_fora_do_tema and not fora_do_tema(afirmacao, documento, titulo, dominio, periodo_documento):
+            return {"entailment": motivo}
         return {"entailment": motivo, "contradiction": motivo}
+
+    if entidade := entidade_ausente(afirmacao, documento, titulo, dominio):
+        return bloqueio(f"entidade ausente: {entidade}")
     # Comparações saem dos dois lados: "dez vezes mais do que em 2016" não é sobre 2016.
     da_afirmacao, da_janela = periodos(sem_comparacoes(afirmacao)), periodos(sem_comparacoes(janela))
     if periodo_divergente(da_afirmacao, da_janela):
-        return {"entailment": "período divergente", "contradiction": "período divergente"}
+        return bloqueio("período divergente")
     if da_janela.vazio and documento_de_outro_periodo(da_afirmacao, periodos_da_referencia(periodo_documento)):
         motivo = f"período divergente (documento de {periodo_documento})"
         return {"entailment": motivo, "contradiction": motivo}

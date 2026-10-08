@@ -1,5 +1,5 @@
 {
-  "versao_config": "2026-10-08.1",
+  "versao_config": "2026-10-08.2",
   "perfil_padrao": "v0",
   "perfis": {
     "v0": {
@@ -30,10 +30,11 @@
     "nli_forte": 0.72
   },
   "verificador": {
-    "_nota": "Regras de operação não validadas em dados rotulados revisados. Só rebaixam apoio ou contradição do NLI para neutro (entidade ausente, período divergente, número sem correspondente); nunca criam um resultado. periodo_do_documento: janela sem período herda o período de referência da fonte (base ou título). Detalhes em veritai/verificador.py.",
+    "_nota": "Regras de operação não validadas em dados rotulados revisados. Só rebaixam apoio ou contradição do NLI para neutro (entidade ausente, período divergente, número sem correspondente); nunca criam um resultado. periodo_do_documento: janela sem período herda o período de referência da fonte (base ou título). contradicao_so_fora_do_tema: entidade ausente e período divergente só bloqueiam a contradição se o documento inteiro não trata da afirmação (proposta em avaliação). Detalhes em veritai/verificador.py.",
     "ativo": true,
     "anotar_ano": true,
-    "periodo_do_documento": true
+    "periodo_do_documento": true,
+    "contradicao_so_fora_do_tema": false
   },
   "copias": {
     "_nota": "Parâmetros de operação não validados. Só detectam cópias quase literais; matérias reescritas da mesma origem ainda contam como independentes.",

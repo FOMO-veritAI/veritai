@@ -223,6 +223,25 @@ def test_comparador_usa_o_periodo_do_titulo_da_fonte(monkeypatch):
     assert agregar(ComparadorNLI("v1", modelos).comparar(afirmacao, [julho])).resultado == "SUPPORTED"
 
 
+def test_alternativa_so_bloqueia_contradicao_em_documento_fora_do_tema():
+    afirmacao = "Vídeo mostra ataque à embaixada da França no Sudão."
+    janela = "No Sudão, manifestantes invadiram a embaixada da Alemanha."
+    # Padrão: a entidade ausente bloqueia as duas relações.
+    assert set(v.bloqueios(afirmacao, janela, janela)) == {"entailment", "contradiction"}
+    # Alternativa: o documento trata do assunto (Sudão), então a troca de país pode refutar.
+    assert v.bloqueios(afirmacao, janela, janela, contradicao_so_fora_do_tema=True) == {"entailment": "entidade ausente: França"}
+    # Documento sem nenhuma entidade da afirmação continua fora do tema.
+    outro = "Em Paris, manifestantes protestaram contra a reforma."
+    assert set(v.bloqueios(afirmacao, outro, outro, contradicao_so_fora_do_tema=True)) == {"entailment", "contradiction"}
+    # Release de outro mês (período de referência diferente) também fica fora do tema.
+    ipca = "O IPCA de agosto de 2026 foi de -0,32%."
+    julho = "O IPCA de julho de 2026 foi de 0,07%."
+    assert v.fora_do_tema(ipca, julho, periodo_documento="2026-07")
+    assert set(v.bloqueios(ipca, julho, julho, periodo_documento="2026-07", contradicao_so_fora_do_tema=True)) == {"entailment", "contradiction"}
+    # Mesmo release, frase sobre outro mês: no tema, só o apoio é bloqueado.
+    assert v.bloqueios(ipca, julho, julho, periodo_documento="2026-08", contradicao_so_fora_do_tema=True) == {"entailment": "período divergente"}
+
+
 def test_bloqueios_e_ajuste_movem_probabilidade_para_neutro():
     assert v.bloqueios("A Bahia cresceu 6,5% em 2025.", "Goiás cresceu 6,5% em 2025.", "Goiás cresceu 6,5% em 2025.") == {
         "entailment": "entidade ausente: Bahia",

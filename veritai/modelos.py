@@ -238,7 +238,7 @@ class ComparadorNLI:
                     if ativo:
                         motivos[janela] = verificador.bloqueios(
                             afirmacao, premissas[(id(fonte), janela)], fonte.texto_completo or fonte.texto, fonte.titulo, fonte.dominio,
-                            periodos_doc[id(fonte)],
+                            periodos_doc[id(fonte)], VERIFICADOR.get("contradicao_so_fora_do_tema", False),
                         )
                         if motivos[janela]:
                             bloqueadas.append({"fonte": fonte.titulo, "janela": janela, "nli_original": nli, "bloqueios": motivos[janela]})
