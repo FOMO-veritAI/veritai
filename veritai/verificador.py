@@ -154,6 +154,33 @@ def periodo_divergente(afirmacao: Periodos, janela: Periodos) -> bool:
     return False
 
 
+def periodo_de_referencia(titulo: str, data_publicacao: str | None) -> str | None:
+    """Período de que o documento trata, pelo título: "AAAA-MM", "AAAA-Tn", ciclo ("2025/26") ou "AAAA".
+
+    Só quando o título cita um único período (sem contar comparações); meses e trimestres sem ano
+    ganham o ano do mais recente já encerrado até a publicação. Heurística para releases
+    ("IPCA vai a 0,33% em dezembro", "abate cresce no 2º trimestre"), não validada.
+    """
+    titulo = anotar_ano(titulo, data_publicacao)
+    try:
+        publicacao = date.fromisoformat((data_publicacao or "")[:10])
+    except ValueError:
+        publicacao = None
+    if publicacao and not FUTURO.search(titulo):
+        trimestre_sem_ano = r"\b(primeiro|segundo|terceiro|quarto|[1-4])(\s*[ºo°]?\s+trimestre)\b(?!\s+(?:de\s+)?\d{4})"
+        titulo = re.sub(
+            trimestre_sem_ano,
+            lambda m: f"{m.group()} de {ano_de_referencia(3 * ORDINAIS[m.group(1).lower()], publicacao)}",
+            titulo,
+            flags=re.IGNORECASE,
+        )
+    achados = periodos(sem_comparacoes(titulo))
+    candidatos = [f"{a}-{m:02d}" for m, a in achados.meses] + [f"{a}-T{t}" for t, a in achados.trimestres] + sorted(achados.ciclos)
+    if not candidatos:
+        candidatos = [str(a) for a in achados.anos_soltos]
+    return candidatos[0] if len(candidatos) == 1 else None
+
+
 def ano_de_referencia(mes: int, publicacao: date) -> int:
     """O mês citado sem ano é o mais recente com esse nome até a data de publicação."""
     return publicacao.year if mes <= publicacao.month else publicacao.year - 1

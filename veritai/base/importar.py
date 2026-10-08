@@ -5,6 +5,7 @@ por carga, e cada página passa pela checagem de URL pública e de tamanho.
 """
 
 import asyncio
+import csv
 import hashlib
 import sqlite3
 from collections.abc import Callable
@@ -18,6 +19,7 @@ from ..config import BASE
 from ..copias import sao_copias, shingles
 from ..fontes import Fonte, checagens_do_google, dominio_da_fonte, google_fact_check, ler_pagina
 from ..relatorio import ChecagemAnterior
+from ..verificador import periodo_de_referencia
 from . import trechos
 from .banco import abrir, agora, nova_carga
 
@@ -54,9 +56,12 @@ def _inserir_documento(conexao: sqlite3.Connection, carga: str, fonte: Fonte, ti
         return False
     grupo = _grupo_de_copias(conexao, fonte.texto)
     cursor = conexao.execute(
-        """INSERT INTO documentos (url, referencia, dominio, titulo, tipo_origem, data_publicacao, data_coleta, hash_conteudo, grupo_copias, texto, carga)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)""",
-        (fonte.url, referencia, fonte.dominio, fonte.titulo, tipo_origem, data_iso(fonte.data_publicacao), agora(), hash_conteudo, fonte.texto, carga),
+        """INSERT INTO documentos (url, referencia, dominio, titulo, tipo_origem, data_publicacao, data_coleta, hash_conteudo, grupo_copias, texto, carga,
+        periodo_referencia) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
+        (
+            fonte.url, referencia, fonte.dominio, fonte.titulo, tipo_origem, data_iso(fonte.data_publicacao), agora(), hash_conteudo, fonte.texto, carga,
+            periodo_de_referencia(fonte.titulo, fonte.data_publicacao),
+        ),
     )
     documento = cursor.lastrowid
     conexao.execute("UPDATE documentos SET grupo_copias = ? WHERE id = ?", (grupo or documento, documento))
@@ -142,6 +147,41 @@ def importar_checagens(caminho: Path, checagens: list[ChecagemAnterior], comando
     return resultado
 
 
+CLASSES = {"SUPPORTED", "REFUTED", "NOT_ENOUGH_EVIDENCE", "CONFLICTING_EVIDENCE"}
+
+
+def classificar_checagens(caminho: Path, arquivo: Path, coluna: str, origem: str) -> ResultadoCarga:
+    """Grava a classe de cada checagem a partir de um CSV com "id" e a coluna indicada.
+
+    O mapeamento é feito fora daqui (área de Dados); linhas com a coluna vazia ficam como estão.
+    A origem diz de onde veio a classe ("mapeamento-por-rotulo", "revisao_humana"...).
+    """
+    resultado = ResultadoCarga()
+    with arquivo.open(encoding="utf-8-sig", newline="") as entrada, abrir(caminho) as conexao:
+        for numero, linha in enumerate(csv.DictReader(entrada), start=2):
+            classe = (linha.get(coluna) or "").strip()
+            if not classe:
+                continue
+            if classe not in CLASSES:
+                resultado.erros.append(f"linha {numero}: classe desconhecida {classe!r}")
+                continue
+            cursor = conexao.execute("UPDATE checagens SET classe = ?, origem_classe = ? WHERE id = ?", (classe, origem, linha.get("id")))
+            if cursor.rowcount:
+                resultado.inseridos += 1
+            else:
+                resultado.erros.append(f"linha {numero}: checagem {linha.get('id')!r} não existe na base")
+    return resultado
+
+
+def preencher_periodos(caminho: Path) -> int:
+    """Calcula o período de referência dos documentos que ainda não têm (bases anteriores ao esquema 2)."""
+    with abrir(caminho) as conexao:
+        linhas = conexao.execute("SELECT id, titulo, data_publicacao FROM documentos WHERE periodo_referencia IS NULL").fetchall()
+        periodos = [(periodo_de_referencia(l["titulo"], l["data_publicacao"]), l["id"]) for l in linhas]
+        conexao.executemany("UPDATE documentos SET periodo_referencia = ? WHERE id = ?", [p for p in periodos if p[0]])
+    return sum(1 for periodo, _ in periodos if periodo)
+
+
 def checagens_de_arquivo(arquivo: Path) -> list[ChecagemAnterior]:
     """Arquivo JSON no formato da resposta de claims:search do Google Fact Check (lista em "claims")."""
     import json
@@ -176,7 +216,7 @@ def documento(caminho: Path, identificador: int) -> dict | None:
     """Metadados de um documento da base, para conferir de onde veio uma evidência."""
     with abrir(caminho) as conexao:
         linha = conexao.execute(
-            """SELECT id, url, referencia, dominio, titulo, tipo_origem, data_publicacao, data_coleta, hash_conteudo, grupo_copias, carga,
+            """SELECT id, url, referencia, dominio, titulo, tipo_origem, data_publicacao, periodo_referencia, data_coleta, hash_conteudo, grupo_copias, carga,
             (SELECT COUNT(*) FROM trechos WHERE documento = documentos.id) AS trechos FROM documentos WHERE id = ?""",
             (identificador,),
         ).fetchone()
@@ -193,7 +233,9 @@ def estatisticas(caminho: Path) -> dict:
             "grupos_de_copias": um("SELECT COUNT(DISTINCT grupo_copias) FROM documentos"),
             "dominios": um("SELECT COUNT(DISTINCT dominio) FROM documentos"),
             "documentos_sem_data": um("SELECT COUNT(*) FROM documentos WHERE data_publicacao IS NULL"),
+            "documentos_com_periodo": um("SELECT COUNT(*) FROM documentos WHERE periodo_referencia IS NOT NULL"),
             "trechos": um("SELECT COUNT(*) FROM trechos"),
             "checagens": um("SELECT COUNT(*) FROM checagens"),
+            "checagens_por_classe": dict(conexao.execute("SELECT COALESCE(classe, '(sem classe)'), COUNT(*) FROM checagens GROUP BY 1 ORDER BY 1").fetchall()),
             "vetores_por_embedding": dict(conexao.execute("SELECT embedding, COUNT(*) FROM vetores GROUP BY embedding").fetchall()),
         }

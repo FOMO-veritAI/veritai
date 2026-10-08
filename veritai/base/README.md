@@ -15,6 +15,9 @@ A base é um banco SQLite que guarda documentos rastreáveis (origem, data, trec
 .venv/bin/python -m veritai.base indexar --perfil v1
 .venv/bin/python -m veritai.base estatisticas
 .venv/bin/python -m veritai.base documento 12                     # origem de um documento citado no relatório
+.venv/bin/python -m veritai.base classificar-checagens mapa.csv --coluna classe_proposta --origem mapeamento-por-rotulo
+.venv/bin/python -m veritai.base periodos                         # período de referência dos documentos sem ele
+.venv/bin/python -m veritai.base migrar                           # base do esquema 1 → esquema atual
 ```
 
 - **`importar-urls`:**
@@ -24,6 +27,8 @@ A base é um banco SQLite que guarda documentos rastreáveis (origem, data, trec
 - **Proibido:** nunca carregue as notícias fictícias da interface do FOMO.
 - **`importar-checagens --arquivo`:** recebe um JSON no formato da resposta de `claims:search` do Google Fact Check, com a lista em `claims`.
 - **Veredito das checagens:** o veredito é guardado como a agência escreveu (`textualRating`). O mapeamento para as 4 classes da VeritAI cabe à área de Dados e não é feito aqui.
+- **`classificar-checagens`:** grava em `classe` a classe que a área de Dados atribuiu, a partir de um CSV com a coluna `id` (o de `veritai-dados/mapeamento/aplicar.py` serve). `--origem` diz de onde ela veio (`mapeamento-por-rotulo`, `revisao_humana`...), porque um mapeamento por rótulo não equivale a uma revisão item a item. Linhas com a classe vazia ficam como estão. A classe **não** entra no relatório nem na decisão: as checagens continuam só informando, com o veredito original.
+- **Período de referência:** cada documento novo recebe `periodo_referencia` a partir do título (`AAAA-MM`, `AAAA-Tn`, ciclo `AAAA/AA` ou `AAAA`), só quando o título cita um único período. Meses e trimestres sem ano ganham o ano do mais recente já encerrado até a publicação ("IPCA vai a 0,33% em dezembro", publicado em 09/01/2026 → `2025-12`). É uma heurística não validada e ainda não é usada na análise.
 - **Snapshot:** cada carga com conteúdo novo gera um identificador de snapshot (`base-AAAAMMDDTHHMMSSZ-xxxxxx`). O relatório o mostra em `versoes["base_evidencias"]`. Uma carga sem nada novo não gera snapshot.
 - **Publicações repetidas:** cada publicação é um documento. O mesmo texto em outra URL ou em outro arquivo entra com a própria data e fica no mesmo grupo de cópias. Só a mesma referência com o mesmo texto conta como repetida.
 - **Arquivos locais:** são identificados pelo caminho completo. Arquivos com o mesmo nome em pastas diferentes são fontes distintas.
@@ -45,7 +50,7 @@ A correção é rodar `python -m veritai.base indexar --perfil <perfil>`. Vetore
 
 O banco usa WAL. Cada análise abre uma única transação de leitura (`BaseEvidencias.leitura()`): o snapshot registrado, as buscas e as checagens de todas as afirmações vêm do mesmo estado. Uma carga gravada durante a análise só aparece na análise seguinte.
 
-O esquema tem versão (`PRAGMA user_version`). Uma base com esquema diferente é recusada com a instrução de recriá-la.
+O esquema tem versão (`PRAGMA user_version`, hoje 2). Uma base do esquema 1 é recusada com a instrução de rodar `migrar`, que acrescenta as colunas novas sem tocar no resto; depois, `periodos` preenche o período dos documentos já carregados. Uma base de outra versão é recusada com a instrução de recriá-la.
 
 ## Busca
 
@@ -68,11 +73,11 @@ Na análise, o mesmo critério vale para todas as origens (base, web e publisher
 | Tabela | Colunas | Observações |
 |---|---|---|
 | `cargas` | `id` (snapshot), `criada_em`, `comando`, `detalhes` | Uma linha por carga com conteúdo novo. |
-| `documentos` | `id`, `url`, `referencia` (URL ou caminho do arquivo), `dominio`, `titulo`, `tipo_origem` (`url` ou `texto_local`), `data_publicacao` (AAAA-MM-DD ou nulo), `data_coleta`, `hash_conteudo` (SHA-256), `grupo_copias`, `texto`, `carga` | Único por `(referencia, hash_conteudo)`. `grupo_copias` é o `id` do primeiro documento do grupo. O texto inteiro é guardado para detectar cópias. |
+| `documentos` | `id`, `url`, `referencia` (URL ou caminho do arquivo), `dominio`, `titulo`, `tipo_origem` (`url` ou `texto_local`), `data_publicacao` (AAAA-MM-DD ou nulo), `data_coleta`, `hash_conteudo` (SHA-256), `grupo_copias`, `texto`, `carga`, `periodo_referencia` (heurístico, ou nulo) | Único por `(referencia, hash_conteudo)`. `grupo_copias` é o `id` do primeiro documento do grupo. O texto inteiro é guardado para detectar cópias. |
 | `trechos` | `id`, `documento`, `posicao`, `texto` | Cerca de `base.palavras_por_trecho` palavras, com cerca de `base.palavras_de_sobreposicao` de sobreposição, sem partir frases. |
 | `trechos_fts` | `texto` | Índice FTS5 (conteúdo externo de `trechos`). |
 | `vetores` | `trecho`, `embedding`, `dimensao`, `vetor` (float32) | Chave `(trecho, embedding)`. |
-| `checagens` | `id`, `alegacao`, `veredito_original`, `agencia`, `data`, `url`, `carga` | Única por `(url, alegacao)`. |
+| `checagens` | `id`, `alegacao`, `veredito_original`, `agencia`, `data`, `url`, `carga`, `classe` (uma das 4 classes, ou nula), `origem_classe` | Única por `(url, alegacao)`. `classe` só é gravada por `classificar-checagens`. |
 | `checagens_fts` | `alegacao` | Índice FTS5 (conteúdo externo de `checagens`). |
 
 ## O que ainda não existe

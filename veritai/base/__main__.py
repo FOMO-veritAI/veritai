@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from ..config import caminho_base, perfil
-from . import importar
+from . import banco, importar
 
 
 def main(argumentos: list[str] | None = None) -> int:
@@ -33,6 +33,13 @@ def main(argumentos: list[str] | None = None) -> int:
     indexar = comandos.add_parser("indexar", help="calcula os vetores de um perfil para os trechos sem vetor")
     indexar.add_argument("--perfil", required=True)
 
+    classificar = comandos.add_parser("classificar-checagens", help="grava a classe das checagens a partir de um CSV com a coluna id")
+    classificar.add_argument("arquivo", type=Path)
+    classificar.add_argument("--coluna", default="classe", help="coluna do CSV com a classe (padrão: classe)")
+    classificar.add_argument("--origem", required=True, help='de onde veio a classe, ex.: "mapeamento-por-rotulo" ou "revisao_humana"')
+
+    comandos.add_parser("periodos", help="calcula o período de referência dos documentos que ainda não têm")
+    comandos.add_parser("migrar", help="leva a base à versão atual do esquema")
     comandos.add_parser("estatisticas", help="mostra o conteúdo da base")
 
     mostrar = comandos.add_parser("documento", help="mostra a origem de um documento (o número aparece no título da evidência)")
@@ -51,6 +58,15 @@ def main(argumentos: list[str] | None = None) -> int:
         else:
             lidas, comando = importar.checagens_de_consulta(args.consulta), "importar-checagens --consulta"
         resultado = importar.importar_checagens(caminho, lidas, comando)
+    elif args.comando == "classificar-checagens":
+        resultado = importar.classificar_checagens(caminho, args.arquivo, args.coluna, args.origem)
+    elif args.comando == "periodos":
+        print(f"{importar.preencher_periodos(caminho)} documento(s) com período de referência.")
+        return 0
+    elif args.comando == "migrar":
+        aplicadas = banco.migrar(caminho)
+        print(f"Esquema {banco.VERSAO_ESQUEMA}" + (f" (migrado de {aplicadas[0]})." if aplicadas else " (já estava atualizado)."))
+        return 0
     elif args.comando == "indexar":
         from ..modelos import ModelosHF
 

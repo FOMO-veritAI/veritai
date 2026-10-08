@@ -61,6 +61,25 @@ def test_anotar_ano_usa_o_mes_mais_recente_ate_a_publicacao():
 
 
 @pytest.mark.parametrize(
+    ("titulo", "data", "esperado"),
+    [
+        ("IPCA vai a 0,33% em dezembro e fecha o ano em 4,26%", "2026-01-09", "2025-12"),
+        ("PIB cresce 0,5% no segundo trimestre de 2026", "2026-09-02", "2026-T2"),
+        ("Trimestrais da pecuária: abate cresce no 4° trimestre", "2026-02-12", "2025-T4"),
+        ("Abate de animais cresce no 2º trimestre", "2025-08-13", "2025-T2"),
+        ("Safra 2025/26 deve atingir 34,08 milhões de toneladas", "2026-03-10", "2025/26"),
+        ("Pisa 2025: Brasil avança em Leitura", "2026-09-08", "2025"),
+        # Comparação não conta; dois períodos ou nenhum ficam sem referência.
+        ("Produção industrial cai 0,6% em agosto frente a julho", "2026-10-01", "2026-08"),
+        ("IPCA de julho e de agosto", "2026-09-11", None),
+        ("Prefeitura inaugura parques", "2026-03-01", None),
+    ],
+)
+def test_periodo_de_referencia_do_documento(titulo, data, esperado):
+    assert v.periodo_de_referencia(titulo, data) == esperado
+
+
+@pytest.mark.parametrize(
     ("texto", "esperadas"),
     [
         ("foi de -0,32%, 0,39 ponto percentual (p.p.) abaixo", [(0.32, True, "pct"), (0.39, False, "pp")]),
