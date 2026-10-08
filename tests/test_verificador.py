@@ -149,6 +149,51 @@ def test_periodo_de_comparacao_nao_torna_a_janela_divergente():
     assert v.bloqueios(afirmacao, "Em setembro de 2023, o superávit foi de US$ 9,18 bilhões.", "superávit")["contradiction"] == "período divergente"
 
 
+def test_janela_sem_periodo_herda_o_periodo_do_documento():
+    afirmacao = "A taxa de desocupação foi de 5,3% no trimestre encerrado em agosto de 2026."
+    janela = "A taxa de desocupação foi de 5,3%."
+    # Documento sobre julho: a janela não apoia nem contradiz a afirmação sobre agosto.
+    assert v.bloqueios(afirmacao, janela, janela, periodo_documento="2026-07") == {
+        "entailment": "período divergente (documento de 2026-07)",
+        "contradiction": "período divergente (documento de 2026-07)",
+    }
+    assert v.bloqueios(afirmacao, janela, janela, periodo_documento="2026-08") == {}
+    assert v.bloqueios(afirmacao, janela, janela) == {}
+    # Janela com período próprio não herda nada.
+    janela_com_mes = "Em agosto de 2026, a taxa de desocupação foi de 5,3%."
+    assert v.bloqueios(afirmacao, janela_com_mes, janela_com_mes, periodo_documento="2026-07") == {}
+    # Granularidades diferentes não divergem: release de agosto com a previsão do ano.
+    safra = "A safra de 2024 deve ser de 296,4 milhões de toneladas."
+    assert v.bloqueios(safra, "A safra deve ser de 296,4 milhões de toneladas.", "safra", periodo_documento="2024-08") == {}
+    assert v.bloqueios("O PIB cresceu 0,5% no segundo trimestre de 2026.", "O PIB cresceu 0,5%.", "PIB", periodo_documento="2026-T1")
+
+
+def test_numero_de_frase_sem_periodo_usa_o_periodo_do_documento():
+    afirmacao = "O IPCA de agosto de 2026 foi de 0,1%, e no ano a alta é de 3,1%."
+    janela = "O IPCA de julho de 2026 foi de 0,1%. No ano, a alta é de 3,1%."
+    assert v.numero_ausente("No ano, a alta acumulada até agosto de 2026 é de 3,1%.", "No ano, a alta acumulada é de 3,1%.", "2026-07") is not None
+    assert v.numero_ausente("No ano, a alta acumulada até agosto de 2026 é de 3,1%.", "No ano, a alta acumulada é de 3,1%.", "2026-08") is None
+    assert v.numero_ausente(afirmacao, janela, "2026-07") is not None
+
+
+@pytest.mark.parametrize(
+    ("referencia", "meses", "trimestres", "ciclos", "anos"),
+    [("2026-08", {(8, 2026)}, set(), set(), set()), ("2026-T2", set(), {(2, 2026)}, set(), set()), ("2025/26", set(), set(), {"2025/26"}, set()), ("2026", set(), set(), set(), {2026}), (None, set(), set(), set(), set())],
+)
+def test_periodos_da_referencia(referencia, meses, trimestres, ciclos, anos):
+    p = v.periodos_da_referencia(referencia)
+    assert (p.meses, p.trimestres, p.ciclos, p.anos_soltos) == (meses, trimestres, ciclos, anos)
+
+
+def test_comparador_usa_o_periodo_do_titulo_da_fonte(monkeypatch):
+    julho = fonte("A taxa de desocupação foi de 5,3%.", titulo="Desocupação é de 5,3% no trimestre encerrado em julho", data="2026-08-27")
+    modelos = ModelosPorJanela({"5,3%": APOIO})
+    afirmacao = "A taxa de desocupação foi de 5,3% no trimestre encerrado em agosto de 2026."
+    assert agregar(ComparadorNLI("v1", modelos).comparar(afirmacao, [julho])).resultado == "NOT_ENOUGH_EVIDENCE"
+    monkeypatch.setitem(modulo_modelos.VERIFICADOR, "periodo_do_documento", False)
+    assert agregar(ComparadorNLI("v1", modelos).comparar(afirmacao, [julho])).resultado == "SUPPORTED"
+
+
 def test_bloqueios_e_ajuste_movem_probabilidade_para_neutro():
     assert v.bloqueios("A Bahia cresceu 6,5% em 2025.", "Goiás cresceu 6,5% em 2025.", "Goiás cresceu 6,5% em 2025.") == {
         "entailment": "entidade ausente: Bahia",

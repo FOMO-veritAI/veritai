@@ -252,10 +252,12 @@ def test_classe_das_checagens_vem_de_csv_com_origem_e_nao_muda_o_relatorio(banco
 
 
 def test_periodo_de_referencia_vem_do_titulo(banco, tmp_path):
-    carregar(banco, tmp_path, {"IPCA vai a 0,33% em dezembro": PARQUES, "Parques": VACINA}, data="2026-01-09", indexar=False)
+    carregar(banco, tmp_path, {"IPCA vai a 0,33% em dezembro": PARQUES, "Parques": VACINA}, data="2026-01-09")
     assert importar.documento(banco, 1)["periodo_referencia"] == "2025-12"
     assert importar.documento(banco, 2)["periodo_referencia"] is None
     assert importar.estatisticas(banco)["documentos_com_periodo"] == 1
+    # A busca entrega o período gravado para o verificador.
+    assert {f.periodo_referencia for f in base_de(banco).buscar("parques públicos na zona norte")} >= {"2025-12"}
 
 
 def test_base_do_esquema_1_e_migrada_so_por_comando(banco, tmp_path, capsys):

@@ -152,6 +152,7 @@ def main() -> None:
     parser.add_argument("--repeticoes", type=int, default=1000)
     parser.add_argument("--semente", type=int, default=0)
     parser.add_argument("--sem-verificador", action="store_true", help="desliga o verificador de entidade, período e número (ablação)")
+    parser.add_argument("--sem-periodo-documento", action="store_true", help="não usa o período de referência da fonte no verificador (ablação)")
     args = parser.parse_args()
 
     from veritai.config import VERIFICADOR
@@ -159,6 +160,8 @@ def main() -> None:
 
     if args.sem_verificador:
         VERIFICADOR["ativo"] = False
+    if args.sem_periodo_documento:
+        VERIFICADOR["periodo_do_documento"] = False
 
     itens = carregar(args.arquivo)
     comparador = ComparadorNLI(args.perfil)

@@ -37,6 +37,7 @@ class Fonte:
     texto_completo: str = ""  # documento inteiro, quando texto é só um trecho (base própria)
     copia_de: str = ""  # grupo de cópias já gravado na base própria
     grupo: str = ""  # fonte independente: mesmo domínio ou cópia quase literal
+    periodo_referencia: str | None = None  # período de que o documento trata, gravado na base própria
 
 
 def dominio_da_fonte(url: str, nome: str) -> str:

@@ -211,6 +211,13 @@ class ComparadorNLI:
         bloqueadas: list[dict] = []
         if selecionadas:
             ativo = VERIFICADOR["ativo"]
+            # Período de referência: o gravado na base ou, para web e publisher, o do título.
+            periodos_doc = {
+                id(fonte): (fonte.periodo_referencia or verificador.periodo_de_referencia(fonte.titulo, fonte.data_publicacao))
+                if ativo and VERIFICADOR.get("periodo_do_documento")
+                else None
+                for fonte, _ in selecionadas
+            }
             # O NLI lê a janela com o ano nos meses citados sem ano; o texto exibido no relatório não muda.
             premissas = {
                 (id(fonte), janela): verificador.anotar_ano(janela, fonte.data_publicacao) if ativo and VERIFICADOR["anotar_ano"] else janela
@@ -230,7 +237,8 @@ class ComparadorNLI:
                     nli = next(restantes)
                     if ativo:
                         motivos[janela] = verificador.bloqueios(
-                            afirmacao, premissas[(id(fonte), janela)], fonte.texto_completo or fonte.texto, fonte.titulo, fonte.dominio
+                            afirmacao, premissas[(id(fonte), janela)], fonte.texto_completo or fonte.texto, fonte.titulo, fonte.dominio,
+                            periodos_doc[id(fonte)],
                         )
                         if motivos[janela]:
                             bloqueadas.append({"fonte": fonte.titulo, "janela": janela, "nli_original": nli, "bloqueios": motivos[janela]})

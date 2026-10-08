@@ -12,7 +12,7 @@ A VeritAI recomenda e documenta. A decisão de publicar é sempre de um revisor 
 | Perfil V0: similaridade (MiniLM) + NLI (MiniLMv2) + regras | Implementado, perfil padrão; mesmos modelos da V0, com a seleção nova de janelas |
 | Baseline V1: similaridade (e5-base) + NLI (mDeBERTa-v3) + regras | Implementado como perfil `v1`, ainda não medido em dados rotulados |
 | Janelas de 1 a 2 frases; 3 janelas por fonte levadas ao NLI | Implementado |
-| Verificador após o NLI: entidade ausente, período divergente, número sem correspondente (valor, sinal, unidade, período, direção e entidade ligada) e ano de referência nos meses sem ano | Implementado; só rebaixa relações para neutro; regras de operação não validadas em dados rotulados revisados |
+| Verificador após o NLI: entidade ausente, período divergente, número sem correspondente (valor, sinal, unidade, período, direção e entidade ligada), período de referência da fonte para janelas sem período e ano de referência nos meses sem ano | Implementado; só rebaixa relações para neutro; regras de operação não validadas em dados rotulados revisados |
 | Script de avaliação (`eval/avaliar.py`) e conjunto de contraste (só sanidade) | Implementado |
 | Busca de fontes: Bing News RSS, GDELT, Google Fact Check (opcional) | Implementado |
 | Evidências enviadas pelo publisher (links e documentos com texto) | Implementado |

@@ -8,7 +8,9 @@ Regras (todas de operação, não validadas em dados rotulados revisados):
 - entidade: nomes próprios e siglas da afirmação precisam aparecer no documento ou no
   título da fonte; senão, a janela não apoia nem contradiz;
 - período: se a afirmação e a janela citam períodos explícitos (mês e ano, trimestre e
-  ano, ciclo ou ano solto) e nenhum coincide, a janela não apoia nem contradiz;
+  ano, ciclo ou ano solto) e nenhum coincide, a janela não apoia nem contradiz; uma janela
+  sem período herda o período de referência do documento ("a taxa foi de 5,3%" num
+  release sobre julho não serve para agosto);
 - número: só há apoio se cada quantidade da afirmação aparece na janela, com o mesmo
   sinal e a mesma unidade (% ou p.p.) e sem estar ligada a outra entidade ("408 pontos em
   Leitura" não sustenta "408 pontos em Matemática").
@@ -181,6 +183,36 @@ def periodo_de_referencia(titulo: str, data_publicacao: str | None) -> str | Non
     return candidatos[0] if len(candidatos) == 1 else None
 
 
+def periodos_da_referencia(referencia: str | None) -> Periodos:
+    """Converte o período de referência de um documento ("2026-08", "2026-T2", "2025/26", "2026") em Periodos."""
+    vazio = Periodos(set(), set(), set(), set())
+    if not referencia:
+        return vazio
+    if m := re.fullmatch(r"(\d{4})-(\d{2})", referencia):
+        return Periodos({(int(m.group(2)), int(m.group(1)))}, set(), set(), set())
+    if m := re.fullmatch(r"(\d{4})-T([1-4])", referencia):
+        return Periodos(set(), {(int(m.group(2)), int(m.group(1)))}, set(), set())
+    if re.fullmatch(r"\d{4}/\d{2}", referencia):
+        return Periodos(set(), set(), {referencia}, set())
+    if re.fullmatch(r"\d{4}", referencia):
+        return Periodos(set(), set(), set(), {int(referencia)})
+    return vazio
+
+
+def documento_de_outro_periodo(afirmacao: Periodos, documento: Periodos) -> bool:
+    """Como periodo_divergente, mas só na mesma granularidade: o período do documento vem do título,
+    e um documento sobre agosto pode trazer o dado do ano (previsão de safra), então mês × ano não diverge."""
+    if afirmacao.meses and documento.meses:
+        return not afirmacao.meses & documento.meses
+    if afirmacao.trimestres and documento.trimestres:
+        return not afirmacao.trimestres & documento.trimestres
+    if afirmacao.ciclos and documento.ciclos:
+        return not afirmacao.ciclos & documento.ciclos
+    if afirmacao.anos_soltos and documento.anos_soltos and not (afirmacao.meses or afirmacao.trimestres):
+        return not afirmacao.anos_soltos & documento.anos_soltos
+    return False
+
+
 def ano_de_referencia(mes: int, publicacao: date) -> int:
     """O mês citado sem ano é o mais recente com esse nome até a data de publicação."""
     return publicacao.year if mes <= publicacao.month else publicacao.year - 1
@@ -258,7 +290,7 @@ def frases(texto: str) -> list[tuple[int, int]]:
     return list(zip(limites, limites[1:]))
 
 
-def contextos(texto: str, qs: list[Quantidade]) -> list[Contexto]:
+def contextos(texto: str, qs: list[Quantidade], padrao: Periodos | None = None) -> list[Contexto]:
     resultado = []
     for inicio_frase, fim_frase in frases(texto):
         da_frase = [q for q in qs if inicio_frase <= q.inicio < fim_frase]
@@ -273,6 +305,9 @@ def contextos(texto: str, qs: list[Quantidade]) -> list[Contexto]:
             # Sem período no próprio trecho, vale o da frase ("é de 5,3% e ... no trimestre encerrado em agosto").
             if not (proprios.meses or proprios.trimestres):
                 proprios = periodos(sem_comparacoes(texto[inicio_frase:fim_frase]))
+            # Sem período na frase, vale o do documento, quando houver.
+            if padrao and not (proprios.meses or proprios.trimestres):
+                proprios = padrao
             # Direção: sinal ou verbo de queda logo antes do número. "Caiu para 5,3%" e "caiu de 102 para 58"
             # falam de níveis, não de variação.
             anterior = texto[antes : q.inicio]
@@ -326,7 +361,7 @@ def mesmo_valor(alegado: Quantidade, encontrado: Quantidade) -> bool:
     return len(alegado_txt) == len(encontrado_txt) and encontrado_txt.startswith(alegado_txt.rstrip("0") or "0")
 
 
-def numero_ausente(afirmacao: str, janela: str) -> Quantidade | None:
+def numero_ausente(afirmacao: str, janela: str, periodo_documento: str | None = None) -> Quantidade | None:
     """A primeira quantidade da afirmação sem correspondente na janela.
 
     Correspondente: mesmo valor e unidade (% ou p.p.), mesma direção ("caiu 0,25%" = "-0,25%";
@@ -335,7 +370,7 @@ def numero_ausente(afirmacao: str, janela: str) -> Quantidade | None:
     ("408 em Leitura, 377 em Matemática" não sustenta "408 em Matemática").
     """
     alegados, da_janela = quantidades(afirmacao), quantidades(janela)
-    ctx_alegados, ctx_janela = contextos(afirmacao, alegados), contextos(janela, da_janela)
+    ctx_alegados, ctx_janela = contextos(afirmacao, alegados), contextos(janela, da_janela, periodos_da_referencia(periodo_documento))
     ent_alegados, ent_janela = ligadas(afirmacao, alegados), ligadas(janela, da_janela)
     todas_da_janela = set().union(*ent_janela)
     periodo_alegado = periodos(afirmacao)
@@ -355,14 +390,23 @@ def numero_ausente(afirmacao: str, janela: str) -> Quantidade | None:
 # ---------------------------------------------------------------- decisão
 
 
-def bloqueios(afirmacao: str, janela: str, documento: str, titulo: str = "", dominio: str = "") -> dict[str, str]:
-    """Rótulos do NLI que esta janela não pode sustentar, com o motivo: {"entailment": ..., "contradiction": ...}."""
+def bloqueios(
+    afirmacao: str, janela: str, documento: str, titulo: str = "", dominio: str = "", periodo_documento: str | None = None
+) -> dict[str, str]:
+    """Rótulos do NLI que esta janela não pode sustentar, com o motivo: {"entailment": ..., "contradiction": ...}.
+
+    periodo_documento é o período de referência da fonte ("2026-08"); só vale para janelas sem período próprio.
+    """
     if entidade := entidade_ausente(afirmacao, documento, titulo, dominio):
         motivo = f"entidade ausente: {entidade}"
         return {"entailment": motivo, "contradiction": motivo}
-    if periodo_divergente(periodos(afirmacao), periodos(sem_comparacoes(janela))):
+    da_afirmacao, da_janela = periodos(afirmacao), periodos(sem_comparacoes(janela))
+    if periodo_divergente(da_afirmacao, da_janela):
         return {"entailment": "período divergente", "contradiction": "período divergente"}
-    if numero := numero_ausente(afirmacao, janela):
+    if da_janela.vazio and documento_de_outro_periodo(da_afirmacao, periodos_da_referencia(periodo_documento)):
+        motivo = f"período divergente (documento de {periodo_documento})"
+        return {"entailment": motivo, "contradiction": motivo}
+    if numero := numero_ausente(afirmacao, janela, periodo_documento):
         sinal = "-" if numero.negativo else ""
         return {"entailment": f"número sem correspondente: {sinal}{numero.valor:g}"}
     return {}
