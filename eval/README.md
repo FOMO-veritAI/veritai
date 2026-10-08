@@ -33,6 +33,8 @@ As evidências entram como texto fornecido (origem `anexo`): nenhuma frase é de
 
 O script também informa o tempo de carga dos modelos e o de inferência.
 
+`avaliar_extracao.py` avalia a extração de afirmações por regras (`veritai/extracao.py`) no CheckThat! 2025, Tarefa 2, em português: F1 de palavras, ROUGE-L e cobertura da referência, com o post inteiro e a primeira frase como linhas de base.
+
 `--sem-verificador` desliga o verificador de entidade, período e número (`veritai/verificador.py`) para a ablação: o mesmo código, com e sem as regras. `--sem-periodo-documento` desliga só a herança do período de referência da fonte (no eval, ele vem do título e da data de cada evidência).
 
 ## Limiares

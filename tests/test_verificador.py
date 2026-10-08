@@ -92,6 +92,9 @@ def test_anotar_ano_usa_o_mes_mais_recente_ate_a_publicacao():
     assert v.anotar_ano("A prova foi em 8 de novembro.", "2026-11-20") == "A prova foi em 8 de novembro."
     assert v.anotar_ano("As provas serão aplicadas em novembro.", "2026-09-18") == "As provas serão aplicadas em novembro."
     assert v.anotar_ano("O IPCA de agosto foi de -0,32%.", None) == "O IPCA de agosto foi de -0,32%."
+    # "Rio de Janeiro" não é mês.
+    assert v.anotar_ano("Choveu no Rio de Janeiro em agosto.", "2026-09-11") == "Choveu no Rio de Janeiro em agosto de 2026."
+    assert v.periodos("No Rio de Janeiro 2026 foi chuvoso.").meses == set()
 
 
 @pytest.mark.parametrize(

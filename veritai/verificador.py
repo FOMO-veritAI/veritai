@@ -187,7 +187,8 @@ def periodos(texto: str) -> Periodos:
     for achado in re.finditer(r"\b(20\d{2})/(\d{2})\b", texto):
         ciclos.add(achado.group())
         marcar(achado)
-    padrao_mes = r"\b(" + "|".join(MESES) + r")\s*(?:de\s+|/\s*)?(\d{4})\b"
+    # "Rio de Janeiro" não é o mês de janeiro.
+    padrao_mes = r"(?<!rio de )\b(" + "|".join(MESES) + r")\s*(?:de\s+|/\s*)?(\d{4})\b"
     for achado in re.finditer(padrao_mes, texto):
         meses.add((MESES.index(achado.group(1)) + 1, int(achado.group(2))))
         marcar(achado)
@@ -299,8 +300,8 @@ def anotar_ano(janela: str, data_publicacao: str | None) -> str:
     partes, fim = [], 0
     for achado in re.finditer(r"\b(" + "|".join(MESES) + r")\b", janela, re.IGNORECASE):
         depois = janela[achado.end() : achado.end() + 9]
-        antes = janela[max(0, achado.start() - 6) : achado.start()]
-        if re.match(r"\s*(?:de\s+|/\s*)?\d{4}", depois) or re.search(r"\d{1,2}\s+de\s+$", antes):
+        antes = janela[max(0, achado.start() - 7) : achado.start()]
+        if re.match(r"\s*(?:de\s+|/\s*)?\d{4}", depois) or re.search(r"\d{1,2}\s+de\s+$|\brio\s+de\s+$", antes, re.IGNORECASE):
             continue
         ano = ano_de_referencia(MESES.index(achado.group(1).lower()) + 1, publicacao)
         partes.append(janela[fim : achado.end()] + f" de {ano}")
