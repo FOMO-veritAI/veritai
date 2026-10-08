@@ -137,3 +137,9 @@ def test_atribuicao_distingue_fonte_de_ordinal(frase, atribuicao):
 def test_sera_e_marca_de_futuro():
     candidata = e.extrair("", "O superávit de 2026 será o segundo maior da série, com US$ 84 bilhões.", "2026-10-06")[0]
     assert any(a.startswith("futuro ou intenção") for a in candidata.alertas)
+
+
+def test_anafora_nao_confunde_nome_proprio():
+    alerta = "depende da frase anterior: completar o sujeito"
+    assert alerta in e.avaliar("O índice ficou em 0,48% em setembro de 2025, segundo o IBGE.")[2]
+    assert alerta not in e.avaliar("O Índice Nacional de Preços ao Consumidor Amplo (IPCA) de setembro de 2025 foi 0,48%.")[2]

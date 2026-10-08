@@ -68,7 +68,9 @@ OPINIAO = re.compile(
 FUTURO = re.compile(r"\b(?:vai|v[ãa]o|ser[áã]o?|ir[áã]o?|dever[áã]o?|deve|devem|pretende\w*|planej\w*|poder[áã]o?|promete\w*|espera-se|previst\w*)\b", re.IGNORECASE)
 # Começos que dependem da frase anterior ("Com isso", "Ele", "O índice").
 ANAFORA = re.compile(
-    r"^(?:ele|ela|eles|elas|isso|isto|esse|essa|este|esta|com isso|além disso|já|também|o índice|a taxa|o indicador|a pesquisa|o resultado)\b",
+    # "O índice" só é anáfora sem nome próprio logo depois: "O Índice Nacional de Preços..." não é.
+    r"^(?:ele|ela|eles|elas|isso|isto|esse|essa|este|esta|com isso|além disso|já|também|"
+    r"(?:o índice|a taxa|o indicador|a pesquisa|o resultado)\b(?-i:(?!\s+[A-ZÀ-Ý])))\b",
     re.IGNORECASE,
 )
 MESES_OU_DATA = re.compile(
