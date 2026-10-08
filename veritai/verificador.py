@@ -298,14 +298,23 @@ def anotar_ano(janela: str, data_publicacao: str | None) -> str:
     if FUTURO.search(janela):
         return janela
     partes, fim = [], 0
+    anterior: tuple[int, int, int] | None = None  # (mês, ano, fim) do último mês anotado
     for achado in re.finditer(r"\b(" + "|".join(MESES) + r")\b", janela, re.IGNORECASE):
-        depois = janela[achado.end() : achado.end() + 9]
+        depois = janela[achado.end() : achado.end() + 20]
         antes = janela[max(0, achado.start() - 7) : achado.start()]
         if re.match(r"\s*(?:de\s+|/\s*)?\d{4}", depois) or re.search(r"\d{1,2}\s+de\s+$|\brio\s+de\s+$", antes, re.IGNORECASE):
             continue
-        ano = ano_de_referencia(MESES.index(achado.group(1).lower()) + 1, publicacao)
+        # O ano já vem dito por extenso: "setembro do ano passado", "dezembro deste ano".
+        if re.match(r"\s+(?:do ano (?:passado|anterior|que vem)|do próximo ano|deste ano|desse ano)\b", depois, re.IGNORECASE):
+            continue
+        mes = MESES.index(achado.group(1).lower()) + 1
+        ano = ano_de_referencia(mes, publicacao)
+        # Intervalo ("entre outubro e dezembro", "de novembro a fevereiro"): o segundo mês segue o primeiro.
+        if anterior and re.fullmatch(r"\s+(?:e|a|até)\s+", janela[anterior[2] : achado.start()], re.IGNORECASE):
+            ano = anterior[1] if mes >= anterior[0] else anterior[1] + 1
         partes.append(janela[fim : achado.end()] + f" de {ano}")
         fim = achado.end()
+        anterior = (mes, ano, achado.end())
     return "".join(partes) + janela[fim:]
 
 

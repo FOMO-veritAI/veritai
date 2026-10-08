@@ -92,6 +92,11 @@ def test_anotar_ano_usa_o_mes_mais_recente_ate_a_publicacao():
     assert v.anotar_ano("A prova foi em 8 de novembro.", "2026-11-20") == "A prova foi em 8 de novembro."
     assert v.anotar_ano("As provas serão aplicadas em novembro.", "2026-09-18") == "As provas serão aplicadas em novembro."
     assert v.anotar_ano("O IPCA de agosto foi de -0,32%.", None) == "O IPCA de agosto foi de -0,32%."
+    # Intervalo: o segundo mês segue o primeiro, mesmo que caia num ano posterior.
+    assert v.anotar_ano("O saldo de outubro a dezembro foi positivo.", "2026-10-06") == "O saldo de outubro de 2026 a dezembro de 2026 foi positivo."
+    assert v.anotar_ano("A safra de novembro a fevereiro foi recorde.", "2026-03-10") == "A safra de novembro de 2025 a fevereiro de 2026 foi recorde."
+    # Ano dito por extenso: não acrescenta outro.
+    assert v.anotar_ano("Alta de 77% em relação a setembro do ano passado.", "2026-10-06") == "Alta de 77% em relação a setembro do ano passado."
     # "Rio de Janeiro" não é mês.
     assert v.anotar_ano("Choveu no Rio de Janeiro em agosto.", "2026-09-11") == "Choveu no Rio de Janeiro em agosto de 2026."
     assert v.periodos("No Rio de Janeiro 2026 foi chuvoso.").meses == set()
