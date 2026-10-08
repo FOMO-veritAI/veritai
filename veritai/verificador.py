@@ -152,11 +152,12 @@ def entidade_ausente(afirmacao: str, documento: str, titulo: str = "", dominio: 
 
 def fora_do_tema(afirmacao: str, documento: str, titulo: str = "", dominio: str = "", periodo_documento: str | None = None) -> bool:
     """O documento inteiro não trata da afirmação: é de outro período de referência (release de outro mês)
-    ou não cita nenhuma das entidades dela. Uma entidade trocada num documento sobre o mesmo assunto não basta."""
+    ou não cita nenhuma das entidades dela. Uma entidade trocada num documento sobre o mesmo assunto não basta.
+    Sem nomes na afirmação ("o custo da cesta básica caiu"), não há como confirmar o tema: conta como fora."""
     if documento_de_outro_periodo(periodos(sem_comparacoes(afirmacao)), periodos_da_referencia(periodo_documento)):
         return True
     todos = nomes(afirmacao)
-    return bool(todos) and len(ausentes(afirmacao, documento, titulo, dominio)) == len(todos)
+    return not todos or len(ausentes(afirmacao, documento, titulo, dominio)) == len(todos)
 
 
 # ---------------------------------------------------------------- períodos

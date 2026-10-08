@@ -249,6 +249,10 @@ def test_alternativa_so_bloqueia_contradicao_em_documento_fora_do_tema():
     assert v.fora_do_tema(ipp, ipca_set)
     # Mesmo release, frase sobre outro mês: no tema, só o apoio é bloqueado.
     assert v.bloqueios(ipca, julho, julho, periodo_documento="2026-08", contradicao_so_fora_do_tema=True) == {"entailment": "período divergente"}
+    # Afirmação sem nomes: não há como confirmar o tema, e a contradição continua bloqueada.
+    cesta = "O custo da cesta básica caiu em 25 das 27 capitais em agosto de 2026."
+    em_julho = "Em julho de 2026, o custo subiu em 20 capitais."
+    assert set(v.bloqueios(cesta, em_julho, em_julho, contradicao_so_fora_do_tema=True)) == {"entailment", "contradiction"}
 
 
 def test_bloqueios_e_ajuste_movem_probabilidade_para_neutro():
