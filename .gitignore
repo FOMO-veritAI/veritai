@@ -17,6 +17,10 @@ mlruns/
 *.sqlite3
 *.safetensors
 *.bin
+*.pkl
+
+# Pacote de entrega montado localmente (notebook, modelo e zip para o Colab)
+entrega/
 
 # Notebooks
 .ipynb_checkpoints/

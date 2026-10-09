@@ -38,6 +38,11 @@ eval/*
 demo/*
 !demo/gerar_demo.py
 
+# Notebook de treino e pacote de entrega (fora da imagem)
+modelo/
+entrega/
+*.pkl
+
 # Arquivos do próprio container
 docker-compose.yml
 .dockerignore

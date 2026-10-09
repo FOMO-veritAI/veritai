@@ -21,6 +21,13 @@ modelos = [
   "torch>=2.9,<3",
 ]
 dev = ["pytest>=8,<10"]
+treino = [
+  "scikit-learn>=1.5,<2",
+  "pandas>=2.2,<4",
+  "pyarrow>=17",
+  "matplotlib>=3.9,<4",
+  "jupyter>=1.1,<2",
+]
 
 [build-system]
 requires = ["setuptools>=69"]

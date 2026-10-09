@@ -20,6 +20,8 @@ Implementado: API `POST /analisar` e `GET /health`; perfis de modelo em `config.
 
 Os limiares de `config.json` não foram validados para nenhum perfil, nem os parâmetros de cópias e da base (Jaccard 0,8, shingles de 5 palavras, RRF k=60). O agrupamento só pega cópias quase literais; matérias reescritas da mesma origem ainda contam como independentes. Na V1, o filtro de similaridade praticamente não atua. Em observação exploratória no contraste, o e5 deu entre 0,80 e 0,87 a todos os pares; o detalhe está em `eval/README.md`.
 
+Experimento de entrega acadêmica: `modelo/treinar_e_avaliar.ipynb` (extra `treino`) treina no ASSIN 2 uma regressão logística sobre atributos dos perfis v0 e v1 para dizer se o trecho apoia a afirmação, com rótulo binário e frases genéricas, não notícias. O modelo vai para `models/veritai_relacao_assin2.pkl`, fora do git, e não entra na API. Medido no teste oficial: macro-F1 0,897 contra 0,887 do NLI da v1 sem treino (diferença dentro do intervalo), falsas aprovações 0,128 contra 0,095 (pior) e calibração melhor (ECE 0,018 contra 0,058). Não é a V2, não cumpre o critério de substituição e não valida limiares nem porcentagem para notícias. O teste do ASSIN 2 já foi usado.
+
 Planejado, nesta ordem:
 1. ~~Baseline V1~~ implementada como perfil `v1`; falta medir em dados rotulados reais antes de virar padrão. `BAAI/bge-m3` ainda não testado.
 2. ~~Base própria em SQLite~~ implementada; falta carregá-la com a lista de fontes confiáveis definida pelo grupo e as checagens. Depois: PostgreSQL + pgvector (ou FAISS), remoção e atualização de documentos, detecção de cópias em escala e mapeamento dos vereditos das agências para as 4 classes (área de Dados).
@@ -56,6 +58,7 @@ Separação treino/validação/calibração/teste por evento, período e fonte; 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[modelos,dev]"
+.venv/bin/python -m pip install -e ".[treino]"   # só para o notebook em modelo/
 .venv/bin/python -m pytest
 .venv/bin/python -m uvicorn veritai.api:app --host 127.0.0.1 --port 8100
 docker build --target teste .     # suíte com Python 3.12, a versão do container

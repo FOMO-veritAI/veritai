@@ -24,6 +24,7 @@ A VeritAI recomenda e documenta. A decisão de publicar é sempre de um revisor 
 | Imagem de container (Dockerfile, docker-compose) | Implementado, validado localmente em arm64 |
 | Imagem oficial para nuvem (GitHub Actions), Kubernetes e AWS | Planejado |
 | PostgreSQL + pgvector, atualização de documentos na base | Planejado |
+| Modelo de relação trecho × afirmação treinado no ASSIN 2 (`modelo/`) | Implementado como experimento; não entra na API |
 | Modelo treinado V2 (XLM-RoBERTa ajustado) | Planejado, depende de dados rotulados |
 | Porcentagem calibrada | Planejado, depende de treino, teste e calibração |
 
@@ -137,6 +138,19 @@ Em um Mac ARM, esse build é lento porque roda por emulação. A imagem oficial 
 
 Formato do conjunto, métricas e regras de uso estão em [`eval/README.md`](eval/README.md). O `eval/contraste.jsonl` é só teste de sanidade: não mede desempenho e não pode ser usado em treino nem em calibração.
 
+## Modelo de relação trecho × afirmação (ASSIN 2)
+
+`modelo/treinar_e_avaliar.ipynb` treina uma regressão logística que estima se um trecho apoia uma afirmação. Ela usa como atributos a similaridade e as probabilidades do NLI dos perfis v0 e v1, além de sinais simples de texto. O treino e a avaliação usam o ASSIN 2 (`nilc-nlp/assin2`), com a divisão oficial. O notebook compara o modelo com os NLIs sem treino e com a regra atual do serviço.
+
+```bash
+.venv/bin/python -m pip install -e ".[modelos,treino]"
+.venv/bin/python -m jupyter notebook modelo/treinar_e_avaliar.ipynb
+```
+
+Os dados vão para `data/assin2/` e o modelo para `models/veritai_relacao_assin2.pkl`, ambos fora do git. Na primeira execução, o cálculo dos atributos leva perto de uma hora na CPU, porque o NLI da v1 é pesado. Depois, os atributos ficam salvos.
+
+É um experimento sobre frases genéricas, não notícias, com rótulo binário. Ele não entra na API, não muda os limiares e não libera porcentagem. Os resultados e as limitações estão nas conclusões do notebook.
+
 ## Contrato
 
 `POST /analisar` recebe a notícia, as afirmações (1 a 10), as evidências com texto enviadas pelo publisher e o número de anexos sem texto. Devolve, para cada afirmação:
@@ -180,6 +194,7 @@ veritai/
 ├── config.py      configuração e segredos do ambiente
 └── config.json    perfis de modelo, seleção e limiares versionados
 eval/              script de avaliação e conjunto de contraste
+modelo/            notebook de treino e avaliação do modelo de relação (ASSIN 2)
 tests/             testes do pipeline, da API, da base e da avaliação
 ```
 
