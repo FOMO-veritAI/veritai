@@ -144,7 +144,7 @@ class BaseEvidencias:
             dados = {
                 linha["id"]: linha
                 for linha in conexao.execute(
-                    f"""SELECT t.id, t.texto, d.id AS documento_id, d.url, d.titulo, d.dominio, d.data_publicacao, d.grupo_copias, d.texto AS documento
+                    f"""SELECT t.id, t.texto, d.id AS documento_id, d.url, d.titulo, d.dominio, d.data_publicacao, d.grupo_copias, d.texto AS documento, d.periodo_referencia
                     FROM trechos t JOIN documentos d ON d.id = t.documento WHERE t.id IN ({marcadores})""",
                     escolhidos,
                 )
@@ -159,6 +159,7 @@ class BaseEvidencias:
                 data_publicacao=dados[i]["data_publicacao"],
                 texto_completo=dados[i]["documento"],
                 copia_de=f"base:{dados[i]['grupo_copias']}",
+                periodo_referencia=dados[i]["periodo_referencia"],
             )
             for i in escolhidos
         ]

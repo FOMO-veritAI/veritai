@@ -37,6 +37,7 @@ class Fonte:
     texto_completo: str = ""  # documento inteiro, quando texto é só um trecho (base própria)
     copia_de: str = ""  # grupo de cópias já gravado na base própria
     grupo: str = ""  # fonte independente: mesmo domínio ou cópia quase literal
+    periodo_referencia: str | None = None  # período de que o documento trata, gravado na base própria
 
 
 def dominio_da_fonte(url: str, nome: str) -> str:
@@ -114,6 +115,41 @@ async def ler_limitado(response: httpx.Response) -> bytes:
     return bytes(corpo)
 
 
+def data_do_json_ld(soup: BeautifulSoup) -> str | None:
+    """datePublished do schema.org em <script type="application/ld+json">, inclusive dentro de @graph."""
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            pendentes = [json.loads(script.string or "")]
+        except ValueError:
+            continue
+        while pendentes:
+            item = pendentes.pop()
+            if isinstance(item, list):
+                pendentes.extend(item)
+            elif isinstance(item, dict):
+                valor = str(item.get("datePublished") or "")[:10]
+                if re.fullmatch(r"\d{4}-\d{2}-\d{2}", valor):
+                    return valor
+                pendentes.extend(item.get("@graph") or [])
+    return None
+
+
+def data_da_pagina(soup: BeautifulSoup) -> str | None:
+    meta = soup.find("meta", attrs={"property": "article:published_time"})
+    if meta and meta.get("content"):
+        return str(meta["content"])[:10]
+    if data := data_do_json_ld(soup):
+        return data
+    # Portais Plone (gov.br, Agência Gov) sem JSON-LD: a data de publicação é o início de
+    # DC.date.valid_range ("AAAA/MM/DD - "); DC.date.created fica como último recurso.
+    for nome in ("DC.date.valid_range", "DC.date.created"):
+        meta = soup.find("meta", attrs={"name": nome})
+        valor = str(meta.get("content") or "")[:10].replace("/", "-") if meta else ""
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", valor):
+            return valor
+    return None
+
+
 async def ler_pagina(url: str, origem: str = "busca_web") -> Fonte:
     destino = await asyncio.to_thread(resolver_publico, url)
     # Conecta no IP validado; em HTTPS, o SNI e a verificação do certificado usam o nome original.
@@ -129,10 +165,7 @@ async def ler_pagina(url: str, origem: str = "busca_web") -> Fonte:
             html = (await ler_limitado(response)).decode(response.encoding or "utf-8", errors="replace")
     soup = BeautifulSoup(html, "html.parser")
     titulo = soup.title.get_text(" ", strip=True) if soup.title else urlparse(url).hostname or url
-    data = None
-    meta = soup.find("meta", attrs={"property": "article:published_time"})
-    if meta and meta.get("content"):
-        data = str(meta["content"])[:10]
+    data = data_da_pagina(soup)
     for element in soup(["script", "style", "nav", "footer", "header", "aside", "form"]):
         element.decompose()
     main = soup.find("article") or soup.find("main") or soup.body or soup

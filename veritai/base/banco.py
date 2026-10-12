@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS documentos (
     grupo_copias INTEGER NOT NULL,
     texto TEXT NOT NULL,
     carga TEXT NOT NULL REFERENCES cargas(id),
+    periodo_referencia TEXT,
     -- Cada publicação é um documento: o mesmo texto em outra URL ou arquivo entra, no mesmo grupo de cópias.
     UNIQUE (referencia, hash_conteudo)
 );
@@ -56,6 +57,8 @@ CREATE TABLE IF NOT EXISTS checagens (
     data TEXT,
     url TEXT NOT NULL,
     carga TEXT NOT NULL REFERENCES cargas(id),
+    classe TEXT CHECK (classe IN ('SUPPORTED', 'REFUTED', 'NOT_ENOUGH_EVIDENCE', 'CONFLICTING_EVIDENCE')),
+    origem_classe TEXT,
     UNIQUE (url, alegacao)
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS checagens_fts USING fts5(
@@ -64,7 +67,16 @@ CREATE VIRTUAL TABLE IF NOT EXISTS checagens_fts USING fts5(
 """
 
 
-VERSAO_ESQUEMA = 1
+VERSAO_ESQUEMA = 2
+
+# Passos de uma versão do esquema para a seguinte, aplicados só pelo comando "migrar".
+MIGRACOES = {
+    1: """
+    ALTER TABLE documentos ADD COLUMN periodo_referencia TEXT;
+    ALTER TABLE checagens ADD COLUMN classe TEXT CHECK (classe IN ('SUPPORTED', 'REFUTED', 'NOT_ENOUGH_EVIDENCE', 'CONFLICTING_EVIDENCE'));
+    ALTER TABLE checagens ADD COLUMN origem_classe TEXT;
+    """,
+}
 
 
 def conectar(caminho: str | Path, criar: bool = False) -> sqlite3.Connection:
@@ -84,8 +96,30 @@ def conectar(caminho: str | Path, criar: bool = False) -> sqlite3.Connection:
         conexao.execute(f"PRAGMA user_version = {VERSAO_ESQUEMA}")
     elif versao != VERSAO_ESQUEMA:
         conexao.close()
-        raise RuntimeError(f"A base em {caminho} tem esquema {versao}; esta versão espera {VERSAO_ESQUEMA}. Recrie a base.")
+        instrucao = "Rode python -m veritai.base migrar." if versao in MIGRACOES else "Recrie a base."
+        raise RuntimeError(f"A base em {caminho} tem esquema {versao}; esta versão espera {VERSAO_ESQUEMA}. {instrucao}")
     return conexao
+
+
+def migrar(caminho: str | Path) -> list[int]:
+    """Leva a base à versão atual do esquema; devolve as versões de origem aplicadas."""
+    caminho = Path(caminho)
+    if not caminho.exists():
+        raise FileNotFoundError(f"Base própria não encontrada em {caminho}.")
+    aplicadas = []
+    conexao = sqlite3.connect(caminho, timeout=30)
+    try:
+        versao = conexao.execute("PRAGMA user_version").fetchone()[0]
+        if versao != VERSAO_ESQUEMA and versao not in MIGRACOES:
+            raise RuntimeError(f"A base em {caminho} tem esquema {versao}, sem migração para {VERSAO_ESQUEMA}. Recrie a base.")
+        while versao in MIGRACOES:
+            # executescript confirma a transação aberta; cada passo vai numa transação própria.
+            conexao.executescript(f"BEGIN; {MIGRACOES[versao]} PRAGMA user_version = {versao + 1}; COMMIT;")
+            aplicadas.append(versao)
+            versao += 1
+    finally:
+        conexao.close()
+    return aplicadas
 
 
 @contextmanager

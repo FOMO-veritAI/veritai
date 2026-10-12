@@ -1,0 +1,512 @@
+"""Verificador de entidade, período e número entre a afirmação e cada janela levada ao NLI.
+
+Só rebaixa: um apoio ou uma contradição dados pelo NLI podem virar neutros quando a
+janela trata de outra entidade, de outro período ou não traz o número da afirmação.
+Nenhuma relação é criada aqui, então o verificador não gera aprovações novas.
+
+Regras (todas de operação, não validadas em dados rotulados revisados):
+- entidade: nomes próprios e siglas da afirmação precisam aparecer no documento ou no
+  título da fonte; senão, a janela não apoia nem contradiz;
+- período: se a afirmação e a janela citam períodos explícitos (mês e ano, trimestre e
+  ano, ciclo ou ano solto) e nenhum coincide, a janela não apoia nem contradiz; uma janela
+  sem período herda o período de referência do documento ("a taxa foi de 5,3%" num
+  release sobre julho não serve para agosto);
+- número: só há apoio se cada quantidade da afirmação aparece na janela, com o mesmo
+  sinal e a mesma unidade (% ou p.p.) e sem estar ligada a outra entidade ("408 pontos em
+  Leitura" não sustenta "408 pontos em Matemática").
+"""
+
+import math
+import re
+import unicodedata
+from dataclasses import dataclass, field
+from datetime import date
+
+MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"]
+ORDINAIS = {"primeiro": 1, "segundo": 2, "terceiro": 3, "quarto": 4, "1": 1, "2": 2, "3": 3, "4": 4}
+
+PALAVRA = r"[\wÀ-ÿ]+(?:-[\wÀ-ÿ]+)*"
+# Palavras com maiúscula que não são entidades (início de frase, meses, artigos e conectivos).
+NAO_ENTIDADES = {
+    "o", "a", "os", "as", "em", "no", "na", "nos", "nas", "de", "do", "da", "dos", "das", "segundo", "segunda", "entre", "há",
+    "um", "uma", "para", "com", "por", "pelo", "pela", "se", "que", "e", "ou", "nesta", "neste", "este", "esta", "esse", "essa",
+    "frente", "ante", "até", "após", "desde", "mais", "menos", "cerca", "apenas", *MESES,
+    # O país fica implícito nas estatísticas nacionais ("taxa de desocupação" = do Brasil).
+    "brasil",
+    # Cargos, termos genéricos e pronomes que aparecem com maiúscula no meio da frase ("o Presidente", "a Lei").
+    "presidente", "presidenta", "ministro", "ministra", "governador", "governadora", "senador", "senadora",
+    "deputado", "deputada", "prefeito", "prefeita", "juiz", "juíza", "lei", "decreto", "governo", "estado",
+    "ele", "ela", "eles", "elas",
+}
+# Entidades que a fonte pode citar por outro termo (chaves e valores sem acentos, em minúsculas).
+EQUIVALENTES: dict[str, tuple[str, ...]] = {
+    "eua": ("estados unidos", "us", "usa"),
+    "estados unidos": ("eua", "us", "usa"),
+    "us": ("eua", "estados unidos", "usa"),
+    "usa": ("eua", "estados unidos", "us"),
+    "reino unido": ("uk", "gra-bretanha"),
+    "onu": ("nacoes unidas",),
+    "oms": ("organizacao mundial da saude",),
+    "stf": ("supremo tribunal federal", "supremo"),
+    "tse": ("tribunal superior eleitoral",),
+    "pib": ("produto interno bruto",),
+    "suprema corte": ("supremo tribunal", "supreme court"),
+    # A comparação por palavra inteira separa "IPCA" de "IPCA-15"; aqui o sufixo não muda a entidade.
+    "covid": ("covid-19", "coronavirus", "sars-cov-2"),
+    "covid-19": ("covid", "coronavirus", "sars-cov-2"),
+}
+QUEDA = re.compile(r"\b(ca[ií]\w*|caem|recu\w*|queda\w*|diminu\w*|redu[çz]\w*|retra\w*|baix\w*|defla\w*|negativ\w*|perd\w*|encolh\w*)\b", re.IGNORECASE)
+COMPARACAO = re.compile(r"\b(?:frente|ante|em relação|comparad\w*|abaixo|acima|contra|do que|após|perdendo para|superando|superou)\b", re.IGNORECASE)
+# Limites do trecho de frase de um número: vírgula, ponto e vírgula, fim de parêntese e "e" ("408 em Leitura, 377 em Matemática e 409 em Ciências").
+SEPARADOR = re.compile(r"[,;)]|\s+e\s+")
+FUTURO = re.compile(r"\b(ser[áã]o?|v[ãa]o?|dever[áã]o?|deve|devem|previst\w*|pr[óo]xim\w*|a partir de)\b", re.IGNORECASE)
+
+# "milh" antes de "mil": "milhões" também começa com "mil".
+MULTIPLICADORES = {"milh": 1e6, "bilh": 1e9, "trilh": 1e12, "mil": 1e3}
+NUMERO = re.compile(
+    r"(?P<sinal>[-–−]\s?)?(?P<inteiro>\d{1,3}(?:\.\d{3})+|\d+)(?:,(?P<decimal>\d+))?"
+    r"(?P<ordinal>[ªº°])?"
+    r"(?:\s*(?P<unidade>%|p\.\s?p\.|pontos? percentua\w*|mil\b|milh\w*|bilh\w*|trilh\w*))?",
+    re.IGNORECASE,
+)
+
+
+def sem_acentos(texto: str) -> str:
+    return unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode().lower()
+
+
+def tokens(texto: str) -> set[str]:
+    return {sem_acentos(t) for t in re.findall(PALAVRA, texto)}
+
+
+# Comparadas sem acentos: "Março" e "Há" no meio da frase também não são entidades.
+NAO_ENTIDADES_NORMALIZADAS = {sem_acentos(p) for p in NAO_ENTIDADES}
+
+
+# ---------------------------------------------------------------- entidades
+
+
+def entidades_com_posicao(texto: str) -> list[tuple[str, int]]:
+    """Nomes próprios e siglas, com a posição no texto: palavras com maiúscula fora do início da frase, siglas e códigos (IPCA-15)."""
+    resultado = []
+    # Texto "gritado" ("PEDASTRIA é agora LEGAL na CALIFÓRNIA"): palavras em maiúsculas não são siglas.
+    gritado = any(len(p) > 6 and p.isupper() and not any(c.isdigit() for c in p) for p in re.findall(PALAVRA, texto))
+    for achado in re.finditer(PALAVRA, texto):
+        palavra = achado.group()
+        if not palavra[0].isupper() or sem_acentos(palavra) in NAO_ENTIDADES_NORMALIZADAS or (gritado and palavra.isupper()):
+            continue
+        sigla = len(palavra) >= 2 and (palavra.isupper() or any(c.isdigit() for c in palavra))
+        inicio_de_frase = not texto[: achado.start()].strip() or texto[: achado.start()].rstrip().endswith((".", ":", "!", "?"))
+        if sigla or not inicio_de_frase:
+            resultado.append((palavra, achado.start()))
+    return resultado
+
+
+def entidades(afirmacao: str) -> list[str]:
+    return list(dict.fromkeys(palavra for palavra, _ in entidades_com_posicao(afirmacao)))
+
+
+# Conectivos dentro de um nome: "Índice de Preços ao Produtor", "Mato Grosso do Sul". O "e" fica de fora
+# para não juntar "Lula e Bolsonaro".
+CONECTIVOS_DE_NOME = re.compile(r"\s*(?:\s(?:de|da|do|das|dos|ao|à)\s)?\s*", re.IGNORECASE)
+
+
+def nomes(afirmacao: str) -> list[str]:
+    """Entidades com os nomes compostos juntos: "Amy Coney Barrett", "Estados Unidos", "Índice de Preços ao Produtor"."""
+    grupos: list[tuple[str, int]] = []  # (nome, fim)
+    for palavra, inicio in entidades_com_posicao(afirmacao):
+        if grupos and CONECTIVOS_DE_NOME.fullmatch(afirmacao[grupos[-1][1] : inicio]):
+            grupos[-1] = (f"{grupos[-1][0]}{afirmacao[grupos[-1][1] : inicio]}{palavra}", inicio + len(palavra))
+        else:
+            grupos.append((palavra, inicio + len(palavra)))
+    return list(dict.fromkeys(nome for nome, _ in grupos))
+
+
+def ausentes(afirmacao: str, documento: str, titulo: str = "", dominio: str = "") -> list[str]:
+    """As entidades da afirmação que não aparecem no documento, no título nem no domínio da fonte.
+
+    Um nome composto basta pelo último nome ("Barrett" por "Amy Barrett"); siglas e nomes podem vir
+    por um equivalente (EUA = Estados Unidos).
+    """
+    texto = sem_acentos(f"{documento} {titulo}")
+    partes_do_dominio = set(sem_acentos(dominio).split("."))
+
+    def presente(termo: str) -> bool:
+        # Comparação por palavra inteira, sem atravessar hífen: "IPCA" não está em "IPCA-15".
+        return re.search(rf"(?<![\w-]){re.escape(termo)}(?![\w-])", texto) is not None
+
+    resultado = []
+    for nome in nomes(afirmacao):
+        chave = sem_acentos(nome)
+        ultima = chave.split()[-1]
+        aceitas = (chave, ultima, *EQUIVALENTES.get(chave, ()), *EQUIVALENTES.get(ultima, ()))
+        if not any(presente(a) for a in aceitas) and not set(chave.split()) & partes_do_dominio:
+            resultado.append(nome)
+    return resultado
+
+
+def entidade_ausente(afirmacao: str, documento: str, titulo: str = "", dominio: str = "") -> str | None:
+    """A primeira entidade da afirmação que não aparece na fonte."""
+    return next(iter(ausentes(afirmacao, documento, titulo, dominio)), None)
+
+
+def fora_do_tema(afirmacao: str, documento: str, titulo: str = "", dominio: str = "", periodo_documento: str | None = None) -> bool:
+    """O documento inteiro não trata da afirmação: é de outro período de referência (release de outro mês)
+    ou não cita nenhuma das entidades dela. Uma entidade trocada num documento sobre o mesmo assunto não basta.
+    Sem nomes na afirmação ("o custo da cesta básica caiu"), não há como confirmar o tema: conta como fora."""
+    if documento_de_outro_periodo(periodos(sem_comparacoes(afirmacao)), periodos_da_referencia(periodo_documento)):
+        return True
+    todos = nomes(afirmacao)
+    return not todos or len(ausentes(afirmacao, documento, titulo, dominio)) == len(todos)
+
+
+# ---------------------------------------------------------------- períodos
+
+
+@dataclass
+class Periodos:
+    meses: set[tuple[int, int]]
+    trimestres: set[tuple[int, int]]
+    ciclos: set[str]
+    anos_soltos: set[int]
+
+    @property
+    def vazio(self) -> bool:
+        return not (self.meses or self.trimestres or self.ciclos or self.anos_soltos)
+
+
+def periodos(texto: str) -> Periodos:
+    texto = texto.lower()
+    meses, trimestres, ciclos = set(), set(), set()
+    ocupado = [False] * len(texto)
+
+    def marcar(achado: re.Match) -> None:
+        for i in range(achado.start(), achado.end()):
+            ocupado[i] = True
+
+    for achado in re.finditer(r"\b(20\d{2})/(\d{2})\b", texto):
+        ciclos.add(achado.group())
+        marcar(achado)
+    # "Rio de Janeiro" não é o mês de janeiro.
+    padrao_mes = r"(?<!rio de )\b(" + "|".join(MESES) + r")\s*(?:de\s+|/\s*)?(\d{4})\b"
+    for achado in re.finditer(padrao_mes, texto):
+        meses.add((MESES.index(achado.group(1)) + 1, int(achado.group(2))))
+        marcar(achado)
+    padrao_tri = r"\b(primeiro|segundo|terceiro|quarto|[1-4])\s*[ºo°]?\s+trimestre\s+(?:de\s+)?(\d{4})\b"
+    for achado in re.finditer(padrao_tri, texto):
+        trimestres.add((ORDINAIS[achado.group(1)], int(achado.group(2))))
+        marcar(achado)
+    anos = {int(a.group()) for a in re.finditer(r"\b(19|20)\d{2}\b", texto) if not ocupado[a.start()]}
+    return Periodos(meses, trimestres, ciclos, anos)
+
+
+def sem_comparacoes(texto: str) -> str:
+    """Remove as orações de comparação ("ante setembro de 2025", "só perdendo para 2023"): o período delas não é o assunto."""
+    return re.sub(COMPARACAO.pattern + r"[^,;().]*", " ", texto, flags=re.IGNORECASE)
+
+
+def periodo_divergente(afirmacao: Periodos, janela: Periodos) -> bool:
+    """True quando os dois citam períodos explícitos do mesmo tipo e nenhum coincide."""
+    if afirmacao.meses and janela.meses:
+        return not afirmacao.meses & janela.meses
+    if afirmacao.trimestres and janela.trimestres:
+        return not afirmacao.trimestres & janela.trimestres
+    if afirmacao.ciclos and janela.ciclos:
+        return not afirmacao.ciclos & janela.ciclos
+    # Afirmação anual ("em 2025") contra uma janela que só fala de meses ou trimestres daquele ano
+    # também diverge: o dado de um trimestre não é o do ano.
+    if afirmacao.anos_soltos and not (afirmacao.meses or afirmacao.trimestres):
+        anos_da_janela = janela.anos_soltos | {a for _, a in janela.meses} | {a for _, a in janela.trimestres}
+        if not anos_da_janela:
+            return False
+        return not afirmacao.anos_soltos & janela.anos_soltos
+    return False
+
+
+def periodo_de_referencia(titulo: str, data_publicacao: str | None) -> str | None:
+    """Período de que o documento trata, pelo título: "AAAA-MM", "AAAA-Tn", ciclo ("2025/26") ou "AAAA".
+
+    Só quando o título cita um único período (sem contar comparações); meses e trimestres sem ano
+    ganham o ano do mais recente já encerrado até a publicação. Heurística para releases
+    ("IPCA vai a 0,33% em dezembro", "abate cresce no 2º trimestre"), não validada.
+    """
+    titulo = anotar_ano(titulo, data_publicacao)
+    try:
+        publicacao = date.fromisoformat((data_publicacao or "")[:10])
+    except ValueError:
+        publicacao = None
+    if publicacao and not FUTURO.search(titulo):
+        trimestre_sem_ano = r"\b(primeiro|segundo|terceiro|quarto|[1-4])(\s*[ºo°]?\s+trimestre)\b(?!\s+(?:de\s+)?\d{4})"
+        titulo = re.sub(
+            trimestre_sem_ano,
+            lambda m: f"{m.group()} de {ano_de_referencia(3 * ORDINAIS[m.group(1).lower()], publicacao)}",
+            titulo,
+            flags=re.IGNORECASE,
+        )
+    achados = periodos(sem_comparacoes(titulo))
+    candidatos = [f"{a}-{m:02d}" for m, a in achados.meses] + [f"{a}-T{t}" for t, a in achados.trimestres] + sorted(achados.ciclos)
+    if not candidatos:
+        candidatos = [str(a) for a in achados.anos_soltos]
+    return candidatos[0] if len(candidatos) == 1 else None
+
+
+def periodos_da_referencia(referencia: str | None) -> Periodos:
+    """Converte o período de referência de um documento ("2026-08", "2026-T2", "2025/26", "2026") em Periodos."""
+    vazio = Periodos(set(), set(), set(), set())
+    if not referencia:
+        return vazio
+    if m := re.fullmatch(r"(\d{4})-(\d{2})", referencia):
+        return Periodos({(int(m.group(2)), int(m.group(1)))}, set(), set(), set())
+    if m := re.fullmatch(r"(\d{4})-T([1-4])", referencia):
+        return Periodos(set(), {(int(m.group(2)), int(m.group(1)))}, set(), set())
+    if re.fullmatch(r"\d{4}/\d{2}", referencia):
+        return Periodos(set(), set(), {referencia}, set())
+    if re.fullmatch(r"\d{4}", referencia):
+        return Periodos(set(), set(), set(), {int(referencia)})
+    return vazio
+
+
+def documento_de_outro_periodo(afirmacao: Periodos, documento: Periodos) -> bool:
+    """Como periodo_divergente, mas só na mesma granularidade: o período do documento vem do título,
+    e um documento sobre agosto pode trazer o dado do ano (previsão de safra), então mês × ano não diverge."""
+    if afirmacao.meses and documento.meses:
+        return not afirmacao.meses & documento.meses
+    if afirmacao.trimestres and documento.trimestres:
+        return not afirmacao.trimestres & documento.trimestres
+    if afirmacao.ciclos and documento.ciclos:
+        return not afirmacao.ciclos & documento.ciclos
+    if afirmacao.anos_soltos and documento.anos_soltos and not (afirmacao.meses or afirmacao.trimestres):
+        return not afirmacao.anos_soltos & documento.anos_soltos
+    return False
+
+
+def ano_de_referencia(mes: int, publicacao: date) -> int:
+    """O mês citado sem ano é o mais recente com esse nome até a data de publicação."""
+    return publicacao.year if mes <= publicacao.month else publicacao.year - 1
+
+
+def anotar_ano(janela: str, data_publicacao: str | None) -> str:
+    """Acrescenta o ano aos meses citados sem ano, para o NLI (o texto exibido não muda).
+
+    Não anota datas com dia ("8 de novembro"), que costumam ser eventos, nem janelas com
+    marcas de futuro ("serão", "previsto"), em que o mês pode ser posterior à publicação.
+    """
+    try:
+        publicacao = date.fromisoformat((data_publicacao or "")[:10])
+    except ValueError:
+        return janela
+    if FUTURO.search(janela):
+        return janela
+    partes, fim = [], 0
+    anterior: tuple[int, int, int] | None = None  # (mês, ano, fim) do último mês anotado
+    for achado in re.finditer(r"\b(" + "|".join(MESES) + r")\b", janela, re.IGNORECASE):
+        depois = janela[achado.end() : achado.end() + 20]
+        antes = janela[max(0, achado.start() - 7) : achado.start()]
+        if re.match(r"\s*(?:de\s+|/\s*)?\d{4}", depois) or re.search(r"\d{1,2}\s+de\s+$|\brio\s+de\s+$", antes, re.IGNORECASE):
+            continue
+        # O ano já vem dito por extenso: "setembro do ano passado", "dezembro deste ano".
+        if re.match(r"\s+(?:do ano (?:passado|anterior|que vem)|do próximo ano|deste ano|desse ano)\b", depois, re.IGNORECASE):
+            continue
+        mes = MESES.index(achado.group(1).lower()) + 1
+        ano = ano_de_referencia(mes, publicacao)
+        # Intervalo ("entre outubro e dezembro", "de novembro a fevereiro"): o segundo mês segue o primeiro.
+        if anterior and re.fullmatch(r"\s+(?:e|a|até)\s+", janela[anterior[2] : achado.start()], re.IGNORECASE):
+            ano = anterior[1] if mes >= anterior[0] else anterior[1] + 1
+        partes.append(janela[fim : achado.end()] + f" de {ano}")
+        fim = achado.end()
+        anterior = (mes, ano, achado.end())
+    return "".join(partes) + janela[fim:]
+
+
+# ---------------------------------------------------------------- números
+
+
+@dataclass(frozen=True)
+class Quantidade:
+    valor: float  # absoluto, já com o multiplicador (mil, milhões...)
+    negativo: bool
+    unidade: str  # "pct", "pp" ou ""
+    casas: int | None  # casas decimais escritas; None para inteiros
+    multiplicador: float = 1.0
+    inicio: int = field(default=0, compare=False)
+    fim: int = field(default=0, compare=False)
+
+
+def quantidades(texto: str) -> list[Quantidade]:
+    resultado = []
+    for achado in NUMERO.finditer(texto):
+        antes = texto[max(0, achado.start() - 1) : achado.start()]
+        depois = texto[achado.end() : achado.end() + 12]
+        sinal, inteiro, decimal, unidade = achado.group("sinal"), achado.group("inteiro"), achado.group("decimal"), (achado.group("unidade") or "").lower()
+        # Números colados a palavras (IPCA-15, Covid-19, 20-valente), ordinais (13ª) e datas (8 de novembro) não são quantidades.
+        if (antes and (antes.isalnum() or antes in ",.")) or achado.group("ordinal") or re.match(r"-\w", depois):
+            continue
+        if sinal and achado.start() > 0 and texto[achado.start() - 1].isalnum():
+            continue
+        if not decimal and not unidade and (re.match(r"\s+de\s+(" + "|".join(MESES) + r")\b", depois, re.IGNORECASE) or re.match(r"(19|20)\d{2}$", inteiro)):
+            continue
+        valor = float(inteiro.replace(".", "") + ("." + decimal if decimal else ""))
+        tipo = "pct" if unidade == "%" else "pp" if unidade.startswith(("p.", "ponto")) else ""
+        multiplicador = next((m for prefixo, m in MULTIPLICADORES.items() if unidade.startswith(prefixo)), 1.0)
+        resultado.append(Quantidade(valor * multiplicador, bool(sinal), tipo, len(decimal) if decimal else None, multiplicador, achado.start(), achado.end()))
+    return resultado
+
+
+@dataclass
+class Contexto:
+    """O que cerca uma quantidade na frase: períodos do seu trecho e direção (queda ou não)."""
+
+    periodos: Periodos
+    queda: bool
+
+
+def frases(texto: str) -> list[tuple[int, int]]:
+    # Divide só antes de maiúscula, para não partir em "p.p. abaixo".
+    limites = [0] + [m.end() for m in re.finditer(r"[.!?]\s+(?=[A-ZÀ-Ý])", texto)] + [len(texto)]
+    return list(zip(limites, limites[1:]))
+
+
+def contextos(texto: str, qs: list[Quantidade], padrao: Periodos | None = None) -> list[Contexto]:
+    resultado = []
+    for inicio_frase, fim_frase in frases(texto):
+        da_frase = [q for q in qs if inicio_frase <= q.inicio < fim_frase]
+        for i, q in enumerate(da_frase):
+            antes = da_frase[i - 1].fim if i else inicio_frase
+            depois = da_frase[i + 1].inicio if i + 1 < len(da_frase) else fim_frase
+            # Períodos de comparação ("frente a julho", "acima de maio") não são o período do número.
+            anterior_ao_numero = COMPARACAO.split(texto[antes : q.inicio])[-1]
+            posterior_ao_numero = COMPARACAO.split(texto[q.fim : depois])[0]
+            trecho = anterior_ao_numero + " " + posterior_ao_numero
+            proprios = periodos(trecho)
+            # Sem período no próprio trecho, vale o da frase ("é de 5,3% e ... no trimestre encerrado em agosto").
+            if not (proprios.meses or proprios.trimestres):
+                proprios = periodos(sem_comparacoes(texto[inicio_frase:fim_frase]))
+            # Sem período na frase, vale o do documento, quando houver.
+            if padrao and not (proprios.meses or proprios.trimestres):
+                proprios = padrao
+            # Direção: sinal ou verbo de queda logo antes do número. "Caiu para 5,3%" e "caiu de 102 para 58"
+            # falam de níveis, não de variação.
+            anterior = texto[antes : q.inicio]
+            queda = QUEDA.search(anterior)
+            nivel = (queda and re.search(r"\bpara\b", anterior[queda.end() :])) or re.match(r"[^.,;]{0,25}?\bpara\s+[-–−]?\d", texto[q.fim :])
+            resultado.append(Contexto(proprios, q.negativo or bool(queda and not nivel)))
+    return resultado
+
+
+def ligadas(texto: str, qs: list[Quantidade]) -> list[set[str]]:
+    """Entidades ligadas a cada quantidade: as do seu trecho de frase, entre o separador mais próximo
+    de cada lado, sem passar por outro número ("408 pontos em Leitura" → {"leitura"})."""
+    achadas = [(sem_acentos(palavra), inicio) for palavra, inicio in entidades_com_posicao(texto)]
+    resultado = []
+    for inicio_frase, fim_frase in frases(texto):
+        da_frase = [q for q in qs if inicio_frase <= q.inicio < fim_frase]
+        for i, q in enumerate(da_frase):
+            antes = da_frase[i - 1].fim if i else inicio_frase
+            depois = da_frase[i + 1].inicio if i + 1 < len(da_frase) else fim_frase
+            esquerda = max([s.end() for s in SEPARADOR.finditer(texto, antes, q.inicio)], default=antes)
+            direita = next((s.start() for s in SEPARADOR.finditer(texto, q.fim, depois)), depois)
+            resultado.append({e for e, inicio in achadas if esquerda <= inicio < direita and not q.inicio <= inicio < q.fim})
+    return resultado
+
+
+def outra_entidade(alegadas: set[str], encontradas: set[str], todas_da_janela: set[str]) -> bool:
+    """O número da janela está ligado a outra entidade, e a da afirmação está ligada a outro número da janela.
+
+    Exigir as duas coisas evita bloquear quando a janela só cita a fonte ("0,5%, segundo o IBGE")
+    ou nomeia a grandeza de outro jeito.
+    """
+    return bool(encontradas) and not alegadas & encontradas and bool(alegadas & todas_da_janela)
+
+
+def mesmo_periodo(alegado: Periodos, encontrado: Periodos) -> bool:
+    if alegado.meses and encontrado.meses:
+        return bool(alegado.meses & encontrado.meses)
+    if alegado.trimestres and encontrado.trimestres:
+        return bool(alegado.trimestres & encontrado.trimestres)
+    return True
+
+
+def mesmo_valor(alegado: Quantidade, encontrado: Quantidade) -> bool:
+    if alegado.casas is not None:
+        # Decimal escrito: igual até a última casa da afirmação ("0,7" = "0,70"; "34,08 milhões" = 34.080.000).
+        tolerancia = 0.5 * 10 ** (-alegado.casas) * alegado.multiplicador
+        return math.isclose(alegado.valor, encontrado.valor, abs_tol=tolerancia + 1e-9)
+    # Inteiro: os algarismos significativos da afirmação são o começo do número encontrado,
+    # com a mesma ordem de grandeza ("152 mil" ~ 152.966; "1.300" não é 13.241).
+    alegado_txt, encontrado_txt = str(int(round(alegado.valor))), str(int(encontrado.valor))
+    return len(alegado_txt) == len(encontrado_txt) and encontrado_txt.startswith(alegado_txt.rstrip("0") or "0")
+
+
+def numero_ausente(afirmacao: str, janela: str, periodo_documento: str | None = None) -> Quantidade | None:
+    """A primeira quantidade da afirmação sem correspondente na janela.
+
+    Correspondente: mesmo valor e unidade (% ou p.p.), mesma direção ("caiu 0,25%" = "-0,25%";
+    "subiram 0,8%" ≠ "caiu 0,8%"), se a afirmação cita mês ou trimestre, ligado a esse período
+    na janela ("-0,32% em agosto" não sustenta "-0,32% em julho") e não ligado a outra entidade
+    ("408 em Leitura, 377 em Matemática" não sustenta "408 em Matemática").
+    """
+    alegados, da_janela = quantidades(afirmacao), quantidades(janela)
+    ctx_alegados, ctx_janela = contextos(afirmacao, alegados), contextos(janela, da_janela, periodos_da_referencia(periodo_documento))
+    ent_alegados, ent_janela = ligadas(afirmacao, alegados), ligadas(janela, da_janela)
+    todas_da_janela = set().union(*ent_janela)
+    periodo_alegado = periodos(sem_comparacoes(afirmacao))
+    for alegado, ctx_a, ent_a in zip(alegados, ctx_alegados, ent_alegados):
+        if not any(
+            (not alegado.unidade or alegado.unidade == q.unidade)
+            and mesmo_valor(alegado, q)
+            and ctx_a.queda == ctx_q.queda
+            and mesmo_periodo(periodo_alegado, ctx_q.periodos)
+            and not outra_entidade(ent_a, ent_q, todas_da_janela)
+            for q, ctx_q, ent_q in zip(da_janela, ctx_janela, ent_janela)
+        ):
+            return alegado
+    return None
+
+
+# ---------------------------------------------------------------- decisão
+
+
+def bloqueios(
+    afirmacao: str,
+    janela: str,
+    documento: str,
+    titulo: str = "",
+    dominio: str = "",
+    periodo_documento: str | None = None,
+    contradicao_so_fora_do_tema: bool = False,
+) -> dict[str, str]:
+    """Rótulos do NLI que esta janela não pode sustentar, com o motivo: {"entailment": ..., "contradiction": ...}.
+
+    periodo_documento é o período de referência da fonte ("2026-08"); só vale para janelas sem período próprio.
+    Com contradicao_so_fora_do_tema, entidade ausente e período divergente só bloqueiam a contradição quando o
+    documento inteiro não trata da afirmação: num documento sobre o mesmo assunto, a entidade ou a data trocada
+    pode ser a própria refutação ("embaixada francesa" × "embaixada alemã").
+    """
+
+    def bloqueio(motivo: str) -> dict[str, str]:
+        if contradicao_so_fora_do_tema and not fora_do_tema(afirmacao, documento, titulo, dominio, periodo_documento):
+            return {"entailment": motivo}
+        return {"entailment": motivo, "contradiction": motivo}
+
+    if entidade := entidade_ausente(afirmacao, documento, titulo, dominio):
+        return bloqueio(f"entidade ausente: {entidade}")
+    # Comparações saem dos dois lados: "dez vezes mais do que em 2016" não é sobre 2016.
+    da_afirmacao, da_janela = periodos(sem_comparacoes(afirmacao)), periodos(sem_comparacoes(janela))
+    if periodo_divergente(da_afirmacao, da_janela):
+        return bloqueio("período divergente")
+    if da_janela.vazio and documento_de_outro_periodo(da_afirmacao, periodos_da_referencia(periodo_documento)):
+        motivo = f"período divergente (documento de {periodo_documento})"
+        return {"entailment": motivo, "contradiction": motivo}
+    if numero := numero_ausente(afirmacao, janela, periodo_documento):
+        sinal = "-" if numero.negativo else ""
+        return {"entailment": f"número sem correspondente: {sinal}{numero.valor:g}"}
+    return {}
+
+
+def ajustar(probabilidades: dict[str, float], bloqueados: dict[str, str]) -> dict[str, float]:
+    """Move a probabilidade dos rótulos bloqueados para neutral."""
+    ajustadas = dict(probabilidades)
+    for rotulo in bloqueados:
+        ajustadas["neutral"] = ajustadas.get("neutral", 0.0) + ajustadas.get(rotulo, 0.0)
+        ajustadas[rotulo] = 0.0
+    return ajustadas

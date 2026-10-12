@@ -401,6 +401,28 @@ def test_requisicoes_pedem_resposta_sem_compressao():
     assert modulo_fontes.CABECALHOS["Accept-Encoding"] == "identity"
 
 
+@pytest.mark.parametrize(
+    ("metas", "esperada"),
+    [
+        ('<meta property="article:published_time" content="2026-10-06T23:51:00-03:00">', "2026-10-06"),
+        # Plone (gov.br): o início de valid_range é a publicação e vale mais que a criação.
+        ('<meta name="DC.date.created" content="2026-10-01T10:00:00-03:00"><meta name="DC.date.valid_range" content="2026/10/06 - ">', "2026-10-06"),
+        ('<meta name="DC.date.created" content="2026-10-01T10:00:00-03:00">', "2026-10-01"),
+        # gov.br do INEP: só JSON-LD; o datePublished vale mais que as metas DC.
+        ('<script type="application/ld+json">{"@type": "NewsArticle", "datePublished": "2026-09-29T12:10:43-03:00"}</script>'
+         '<meta name="DC.date.created" content="2026-09-01">', "2026-09-29"),
+        ('<script type="application/ld+json">{"@graph": [{"@type": "WebPage"}, {"datePublished": "2026-09-28"}]}</script>', "2026-09-28"),
+        ('<script type="application/ld+json">{inválido</script>', None),
+        ('<meta name="DC.date.valid_range" content=" - "><meta name="DC.date.modified" content="2026-10-02">', None),
+        ("", None),
+    ],
+)
+def test_data_da_pagina_le_article_e_plone(metas, esperada):
+    from bs4 import BeautifulSoup
+
+    assert modulo_fontes.data_da_pagina(BeautifulSoup(f"<html><head>{metas}</head></html>", "html.parser")) == esperada
+
+
 @pytest.mark.skipif(shutil.which("git") is None, reason="git não instalado")
 def test_maestri_fica_fora_do_git():
     raiz = Path(__file__).resolve().parents[1]
@@ -716,3 +738,29 @@ def test_url_com_ipv6_literal_usa_colchetes_no_host(monkeypatch):
     pedidos = cliente_falso(monkeypatch, lambda _r: httpx.Response(200, headers={"content-type": "text/html"}, text=PAGINA))
     asyncio.run(modulo_fontes.ler_pagina("http://[2606:4700::1111]:80/x"))
     assert pedidos[0].headers["host"] == "[2606:4700::1111]:80"
+
+
+def test_nli_e_carregado_em_float32(monkeypatch):
+    """O transformers 5 carrega no tipo do checkpoint; o mDeBERTa da V1 vem em float16, lento em CPU."""
+    import sys
+    import types
+
+    class NLIFalso:
+        config = types.SimpleNamespace(id2label={0: "entailment", 1: "neutral", 2: "contradiction"})
+        tipo = "float16"
+
+        def float(self):
+            self.tipo = "float32"
+            return self
+
+        def eval(self):
+            return self
+
+    nli = NLIFalso()
+    transformers = types.SimpleNamespace(
+        AutoModelForSequenceClassification=types.SimpleNamespace(from_pretrained=lambda nome: nli),
+        AutoTokenizer=types.SimpleNamespace(from_pretrained=lambda nome: object()),
+    )
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setitem(sys.modules, "sentence_transformers", types.SimpleNamespace(SentenceTransformer=lambda nome, device: object()))
+    assert modulo_modelos.ModelosHF("v1")._carregar()[2].tipo == "float32"

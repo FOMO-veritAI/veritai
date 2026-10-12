@@ -9,9 +9,11 @@ A VeritAI recomenda e documenta. A decisão de publicar é sempre de um revisor 
 | Componente | Situação |
 |---|---|
 | API `POST /analisar` com relatório por afirmação | Implementado |
+| API `POST /extrair`: afirmações candidatas por regras, sem LLM, para o publicador confirmar | Implementado; regras de operação não validadas em dados anotados |
 | Perfil V0: similaridade (MiniLM) + NLI (MiniLMv2) + regras | Implementado, perfil padrão; mesmos modelos da V0, com a seleção nova de janelas |
 | Baseline V1: similaridade (e5-base) + NLI (mDeBERTa-v3) + regras | Implementado como perfil `v1`, ainda não medido em dados rotulados |
 | Janelas de 1 a 2 frases; 3 janelas por fonte levadas ao NLI | Implementado |
+| Verificador após o NLI: entidade ausente, período divergente, número sem correspondente (valor, sinal, unidade, período, direção e entidade ligada), período de referência da fonte para janelas sem período e ano de referência nos meses sem ano | Implementado; só rebaixa relações para neutro; regras de operação não validadas em dados rotulados revisados |
 | Script de avaliação (`eval/avaliar.py`) e conjunto de contraste (só sanidade) | Implementado |
 | Busca de fontes: Bing News RSS, GDELT, Google Fact Check (opcional) | Implementado |
 | Evidências enviadas pelo publisher (links e documentos com texto) | Implementado |
@@ -162,6 +164,15 @@ Os dados vão para `data/assin2/` e o modelo para `models/veritai_relacao_assin2
 - `justificativa` e `limitacoes`.
 
 O relatório também traz `avisos` (falhas de busca) e `versoes` (modelo, NLI, embedding, configuração e base de evidências). Os modelos de dados ficam em `veritai/relatorio.py`.
+
+`POST /extrair` recebe a mesma `noticia` (título, texto e data) e `maximo` (1 a 10, padrão 10). Devolve afirmações **candidatas**, propostas por regras (`veritai/extracao.py`), sem LLM:
+
+- `texto`: a afirmação pronta para o `/analisar` (10 a 500 caracteres), com as datas completadas pela data da notícia ("nesta terça-feira (6)" → "nesta terça-feira (6 de outubro de 2026)"; meses sem ano ganham o ano);
+- `trecho_origem` (frase literal) e `posicao` (0 = título);
+- `pontuacao`, `sinais` (número, período, nome próprio, atribuição, verbo de fato, data completada) e `atribuicao` ("segundo o IBGE" → `IBGE`);
+- `alertas` para o publicador conferir: sem período, depende da frase anterior, futuro ou intenção, citação.
+
+A resposta traz também `avisos` e `versoes` (`extracao`, `config`). O `/extrair` só propõe: o publicador confirma, edita ou descarta cada candidata, e só as confirmadas vão para o `/analisar`, que não mudou. As regras não descontextualizam ("A taxa caiu" continua sem dizer qual taxa) nem separam fatos ligados por "e".
 
 **Data da notícia:** `noticia.data` deve vir em `AAAA-MM-DD`. Com ela, as evidências de qualquer origem publicadas em dias posteriores ficam de fora; as do mesmo dia entram. As evidências sem data entram e o relatório registra isso em `limitacoes`. Uma data em outro formato não filtra nada e também gera uma limitação.
 

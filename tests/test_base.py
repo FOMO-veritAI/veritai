@@ -233,6 +233,56 @@ def test_checagens_guardam_veredito_original_e_so_informam(banco, tmp_path):
     assert comparador.fontes_recebidas == []
 
 
+def test_classe_das_checagens_vem_de_csv_com_origem_e_nao_muda_o_relatorio(banco, tmp_path, capsys):
+    arquivo = tmp_path / "claims.json"
+    arquivo.write_text(json.dumps(CLAIMS), encoding="utf-8")
+    importar.importar_checagens(banco, importar.checagens_de_arquivo(arquivo), "teste")
+    mapa = tmp_path / "mapa.csv"
+    mapa.write_text("id,classe_proposta\n1,\n2,REFUTED\n3,REFUTED\n", encoding="utf-8")
+    resultado = importar.classificar_checagens(banco, mapa, "classe_proposta", "mapeamento-por-rotulo")
+    # Classe vazia fica como está; id inexistente é erro.
+    assert resultado.inseridos == 1 and resultado.erros == ["linha 4: checagem '3' não existe na base"]
+    assert importar.estatisticas(banco)["checagens_por_classe"] == {"(sem classe)": 1, "REFUTED": 1}
+    invalida = tmp_path / "invalida.csv"
+    invalida.write_text("id,classe\n1,Falso\n", encoding="utf-8")
+    assert main(["--base", str(banco), "classificar-checagens", str(invalida), "--origem", "x"]) == 1
+    assert "classe desconhecida 'Falso'" in capsys.readouterr().err
+    # A classe fica na base para a área de Dados; o relatório continua com o veredito da agência.
+    assert [c.veredito for c in base_de(banco).checagens("vacina da gripe")] == ["Falso"]
+
+
+def test_periodo_de_referencia_vem_do_titulo(banco, tmp_path):
+    carregar(banco, tmp_path, {"IPCA vai a 0,33% em dezembro": PARQUES, "Parques": VACINA}, data="2026-01-09")
+    assert importar.documento(banco, 1)["periodo_referencia"] == "2025-12"
+    assert importar.documento(banco, 2)["periodo_referencia"] is None
+    assert importar.estatisticas(banco)["documentos_com_periodo"] == 1
+    # A busca entrega o período gravado para o verificador.
+    assert {f.periodo_referencia for f in base_de(banco).buscar("parques públicos na zona norte")} >= {"2025-12"}
+
+
+def test_base_do_esquema_1_e_migrada_so_por_comando(banco, tmp_path, capsys):
+    import sqlite3
+
+    from veritai.base import banco as modulo_banco
+
+    carregar(banco, tmp_path, {"IPCA vai a 0,33% em dezembro": PARQUES}, data="2026-01-09", indexar=False)
+    # Volta a base ao esquema 1 (sem as colunas novas), como a de artefatos/.
+    conexao = sqlite3.connect(banco)
+    conexao.executescript(
+        "ALTER TABLE documentos DROP COLUMN periodo_referencia; ALTER TABLE checagens DROP COLUMN classe;"
+        "ALTER TABLE checagens DROP COLUMN origem_classe; PRAGMA user_version = 1;"
+    )
+    conexao.close()
+    with pytest.raises(RuntimeError, match="migrar"):
+        importar.estatisticas(banco)
+    assert main(["--base", str(banco), "migrar"]) == 0
+    assert "migrado de 1" in capsys.readouterr().out
+    assert modulo_banco.migrar(banco) == []
+    assert importar.documento(banco, 1)["periodo_referencia"] is None
+    assert main(["--base", str(banco), "periodos"]) == 0
+    assert importar.documento(banco, 1)["periodo_referencia"] == "2025-12"
+
+
 def test_importar_urls_usa_leitor_seguro_e_limita_quantidade(banco, tmp_path, monkeypatch):
     lidas = []
 
