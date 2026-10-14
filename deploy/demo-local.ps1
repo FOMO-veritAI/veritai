@@ -22,7 +22,9 @@ param(
     [string]$Contexto = "docker-desktop",
     [int]$Porta = 8000
 )
-$ErrorActionPreference = "Stop"
+# "Continue": no Windows PowerShell 5.1, com a saída redirecionada, o stderr do kubectl vira erro e,
+# com "Stop", derrubaria o script. Os comandos nativos são conferidos pelo código de saída (Conferir).
+$ErrorActionPreference = "Continue"
 $ns = "fomo-local"
 $manifesto = Join-Path $PSScriptRoot "k8s\local.yaml"
 
@@ -31,13 +33,8 @@ function Exigir($comando, $dica) {
 }
 
 function Existe($argumentos) {
-    # No Windows PowerShell 5.1, o stderr de um comando nativo vira erro fatal com "Stop".
-    $antes = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
     & kubectl @argumentos 2>$null | Out-Null
-    $existe = $LASTEXITCODE -eq 0
-    $ErrorActionPreference = $antes
-    return $existe
+    return $LASTEXITCODE -eq 0
 }
 
 function Conferir($mensagem) {
@@ -58,6 +55,7 @@ if ((kubectl config current-context) -ne $Contexto) {
 
 if ($Apagar) {
     kubectl delete namespace $ns --ignore-not-found
+    Conferir "Não foi possível apagar o namespace $ns."
     return
 }
 
@@ -89,7 +87,7 @@ Conferir "A VeritAI não ficou pronta. Veja: kubectl -n $ns describe pods"
 kubectl -n $ns rollout status deploy/fomo-api --timeout=300s
 Conferir "A API do FOMO não ficou pronta. Veja: kubectl -n $ns describe pods"
 
-$encaminhamento = Start-Process kubectl -ArgumentList "-n", $ns, "port-forward", "svc/fomo-api", "$($Porta):8000" -PassThru -WindowStyle Hidden
+$encaminhamento = Start-Process kubectl -ArgumentList "-n", $ns, "port-forward", "svc/fomo-api", "$($Porta):8000" -PassThru -WindowStyle Hidden -ErrorAction Stop
 $tunel = $null
 try {
     $pronto = $false
@@ -107,7 +105,7 @@ try {
 
     $log = Join-Path $env:TEMP "fomo-cloudflared.log"
     Remove-Item $log -ErrorAction SilentlyContinue
-    $tunel = Start-Process cloudflared -ArgumentList "tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:$Porta" -PassThru -WindowStyle Hidden -RedirectStandardError $log
+    $tunel = Start-Process cloudflared -ArgumentList "tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:$Porta" -PassThru -WindowStyle Hidden -RedirectStandardError $log -ErrorAction Stop
     $url = $null
     for ($i = 0; $i -lt 60 -and -not $url; $i++) {
         Start-Sleep 1
