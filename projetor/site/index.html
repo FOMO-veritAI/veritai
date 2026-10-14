@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Embeddings da VeritAI</title>
+  <meta name="description" content="Visualização dos embeddings usados pela VeritAI, no Embedding Projector do TensorFlow.">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;900&family=Newsreader:ital,wght@1,500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --texto: #000;
+      --fundo: #fff;
+      --suave: #4a4a4a;
+      --linha: #000;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--fundo);
+      color: var(--texto);
+      font: 400 17px/1.6 Inter, system-ui, sans-serif;
+    }
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 40px 16px 64px;
+    }
+    .marca { display: flex; align-items: baseline; gap: 10px; margin-bottom: 32px; }
+    .marca .verit { font: italic 500 34px/1 Newsreader, Georgia, serif; }
+    .marca .ai { font: 900 34px/1 Inter, sans-serif; margin-left: -8px; }
+    .marca .em { font-size: 13px; letter-spacing: .08em; }
+    h1 { font-size: 30px; line-height: 1.2; margin: 0 0 16px; font-weight: 900; }
+    h2 { font-size: 19px; margin: 36px 0 8px; font-weight: 900; }
+    p, li { max-width: 68ch; }
+    ul { padding-left: 20px; }
+    a { color: var(--texto); text-underline-offset: 3px; }
+    a:focus-visible, .botao:focus-visible { outline: 3px solid #000; outline-offset: 3px; box-shadow: 0 0 0 6px #fff; }
+    .botao {
+      display: inline-block;
+      margin: 12px 0 8px;
+      padding: 12px 20px;
+      border: 2px solid var(--linha);
+      background: var(--texto);
+      color: var(--fundo);
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .botao:hover { background: var(--fundo); color: var(--texto); }
+    .quadro { border: 1px solid var(--linha); padding: 16px 20px; margin: 24px 0; }
+    .quadro p { margin: 0; }
+    code { font-size: 15px; background: #f0f0f0; padding: 1px 5px; }
+    footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--linha); color: var(--suave); font-size: 14px; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="marca" aria-label="VeritAI in FOMO">
+      <span class="verit">Verit</span><span class="ai">AI</span><span class="em">(IN FOMO)</span>
+    </div>
+
+    <h1>Como a VeritAI enxerga os textos</h1>
+    <p>Para comparar uma afirmação com um trecho de evidência, a VeritAI transforma cada texto em um vetor: uma lista de centenas de números. Textos com sentido parecido viram vetores próximos. Esta página mostra esses vetores no <strong>Embedding Projector do TensorFlow</strong>, o mesmo do projector.tensorflow.org, que reduz tudo para 2D ou 3D com PCA, t-SNE ou UMAP.</p>
+    <a class="botao" href="app/">Abrir o projetor</a>
+
+    <h2>O que tem aqui</h2>
+    <ul>
+      <li>Cerca de 3 mil frases do <a href="https://huggingface.co/datasets/nilc-nlp/assin2">ASSIN 2</a> (1.500 pares do treino, metade "apoia" e metade "não apoia").</li>
+      <li>As 28 afirmações do nosso conjunto de contraste, com as evidências de cada uma.</li>
+      <li>Dois embeddings, os mesmos dos perfis do serviço: <strong>v0</strong> (<code>paraphrase-multilingual-MiniLM-L12-v2</code>, 384 dimensões) e <strong>v1</strong> (<code>multilingual-e5-base</code>, 768 dimensões, com os prefixos <code>query:</code> nas afirmações e <code>passage:</code> nos trechos).</li>
+    </ul>
+
+    <h2>Como usar</h2>
+    <ul>
+      <li>No painel da esquerda, em <em>DATA</em>, escolha o embedding (v0 ou v1).</li>
+      <li>Em <em>Color by</em>, pinte os pontos por <code>rotulo</code>, <code>papel</code> (afirmação ou trecho) ou <code>origem</code>.</li>
+      <li>Na busca da direita, procure um par pelo campo <code>par</code> (por exemplo, <code>P01a</code> ou <code>assin2-1</code>) para ver a afirmação e o trecho juntos.</li>
+      <li>Clique em um ponto para ver os vizinhos mais próximos pela distância de cosseno.</li>
+    </ul>
+
+    <h2>O que isso não mostra</h2>
+    <div class="quadro">
+      <p>Estar perto não quer dizer que um texto confirma o outro. "A biblioteca municipal abre aos domingos" e "A biblioteca municipal não abre aos domingos" têm similaridade de cosseno 0,95 no v1 e 0,67 no v0, enquanto uma frase sobre futebol fica em -0,10 no v0. Por isso a VeritAI usa a similaridade só para escolher trechos. Quem diz se o trecho apoia ou contradiz é o modelo de NLI, com regras explícitas, e a decisão final é sempre de um revisor humano no FOMO.</p>
+    </div>
+    <ul>
+      <li>O ASSIN 2 tem frases curtas que descrevem cenas, não notícias.</li>
+      <li>No v1, o e5 dá similaridade alta a quase qualquer par: entre 0,80 e 0,87 no contraste, e 0,89 entre a frase da biblioteca e a do futebol.</li>
+      <li>O contraste é sintético, escrito à mão, e serve só de conferência.</li>
+    </ul>
+
+    <footer>
+      <p>Projeto FOMO-veritAI, Residência em IA. Código em <a href="https://github.com/FOMO-veritAI/veritai">github.com/FOMO-veritAI/veritai</a> (pasta <code>projetor/</code>).</p>
+      <p>Visualização: <a href="https://github.com/tensorflow/embedding-projector-standalone">Embedding Projector</a>, do TensorFlow (Apache 2.0), sem o Google Analytics da versão de demonstração. Dados: ASSIN 2 (Real, Fonseca e Gonçalo Oliveira, PROPOR 2020).</p>
+    </footer>
+  </main>
+</body>
+</html>

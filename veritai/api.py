@@ -1,5 +1,7 @@
 """API HTTP da VeritAI, consumida pela plataforma FOMO."""
 
+import os
+
 from fastapi import FastAPI
 
 from .base import BaseEvidencias
@@ -17,12 +19,15 @@ def criar_app(comparador: Comparador | None = None, buscador: Buscador = buscar_
         # Falha ao subir, e não na primeira análise, se a base não tiver vetores do perfil em uso.
         base.verificar_indice()
 
+    # /ping e /invocations são as rotas que o SageMaker exige; fazem o mesmo que /health e /analisar.
     @app.get("/health")
+    @app.get("/ping", include_in_schema=False)
     def health():
         snapshot = base.snapshot if base is not None else None
         return {"status": "ok", "perfil": comparador.perfil, "versoes": versoes(comparador.perfil, snapshot)}
 
     @app.post("/analisar", response_model=RelatorioAnalise)
+    @app.post("/invocations", response_model=RelatorioAnalise, include_in_schema=False)
     async def analisar_noticia(pedido: PedidoAnalise):
         return await analisar(pedido, comparador, buscador, base)
 
@@ -39,3 +44,10 @@ def criar_app_padrao() -> FastAPI:
 
 
 app = criar_app_padrao()
+
+
+def servir() -> None:
+    """Comando `serve`, que o SageMaker roda no container: a mesma API, na porta 8080."""
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("SAGEMAKER_BIND_TO_PORT", "8080")))

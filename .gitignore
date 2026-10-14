@@ -33,3 +33,7 @@ entrega/
 
 # Saída gerada pela demonstração
 demo/saida/
+
+# Site de embeddings e logs do TensorBoard gerados por projetor/gerar.py
+_site/
+logs/

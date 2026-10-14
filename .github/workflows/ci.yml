@@ -1,0 +1,67 @@
+# Testes a cada push e PR; em main, publica as imagens no GitHub Container Registry.
+#   ghcr.io/fomo-veritai/veritai-ponte  (amd64 e arm64) - ponte FOMO → SageMaker, usada no k3s
+#   ghcr.io/fomo-veritai/veritai        (amd64)         - serviço completo, sem modelos dentro
+# A imagem do SageMaker vai para o ECR pelo deploy/aws/implantar.py, não por aqui.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      # Os testes simulam modelos e busca: não precisam de torch.
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m pytest -q
+
+  imagens:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: testes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Ponte
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ponte
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/fomo-veritai/veritai-ponte:main
+            ghcr.io/fomo-veritai/veritai-ponte:${{ github.sha }}
+          cache-from: type=gha,scope=ponte
+          cache-to: type=gha,mode=max,scope=ponte
+      - name: Serviço
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/fomo-veritai/veritai:main
+            ghcr.io/fomo-veritai/veritai:${{ github.sha }}
+          cache-from: type=gha,scope=veritai
+          cache-to: type=gha,mode=max,scope=veritai

@@ -3,6 +3,8 @@
 #   docker build -t veritai:local .
 #   docker build --target teste .                      # roda a suíte com Python 3.12 (não vira imagem final)
 #   docker build --build-arg PERFIL_EMBUTIDO=v1 -t veritai:v1-embutido .
+#   docker build --build-arg PERFIL_EMBUTIDO=v0 -t veritai:sagemaker .   # imagem do SageMaker (modelos dentro)
+#   docker build --target ponte -t veritai-ponte .                       # ponte FOMO → SageMaker, sem torch
 
 ARG PYTHON_IMAGE=python:3.12-slim
 
@@ -34,7 +36,33 @@ COPY eval ./eval
 COPY demo/gerar_demo.py ./demo/
 RUN python -m pytest -q -p no:cacheprovider
 
+# --- Ponte para o SageMaker (só com --target ponte): sem torch nem modelos, com boto3 ------------------
+FROM ${PYTHON_IMAGE} AS ponte
+ENV PATH=/opt/venv/bin:$PATH \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HOME=/tmp
+RUN python -m venv /opt/venv \
+ && groupadd --system --gid 10001 veritai \
+ && useradd --system --no-create-home --uid 10001 --gid 10001 --home-dir /tmp --shell /usr/sbin/nologin veritai
+WORKDIR /src
+COPY pyproject.toml README.md ./
+COPY veritai ./veritai
+RUN python -c "import tomllib; p = tomllib.load(open('pyproject.toml', 'rb'))['project']; print('\n'.join(p['dependencies'] + p['optional-dependencies']['aws']))" > requisitos.txt \
+ && pip install -r requisitos.txt \
+ && pip install --no-deps . \
+ && rm -rf /src
+USER veritai
+WORKDIR /tmp
+EXPOSE 8100
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=4).status == 200 else 1)"]
+CMD ["uvicorn", "veritai.ponte:criar_app", "--factory", "--host", "0.0.0.0", "--port", "8100"]
+
 # --- Imagem final ----------------------------------------------------------------------------------
+# No SageMaker, o container é iniciado com `serve` (veritai.api:servir), na porta 8080.
 FROM ${PYTHON_IMAGE} AS final
 ARG PERFIL_EMBUTIDO=""
 ENV PATH=/opt/venv/bin:$PATH \
@@ -56,7 +84,7 @@ WORKDIR /app
 RUN if [ -n "$PERFIL_EMBUTIDO" ]; then \
       python -c "import sys; from huggingface_hub import snapshot_download; from veritai.config import perfil; p = perfil(sys.argv[1]); [snapshot_download(m, allow_patterns=['*.json', '*.safetensors', '*.model', '*.txt', 'sentencepiece*', '1_Pooling/*']) for m in (p['embedding'], p['nli'])]" "$PERFIL_EMBUTIDO"; \
     fi
-EXPOSE 8100
+EXPOSE 8100 8080
 VOLUME ["/cache", "/data"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=4).status == 200 else 1)"]
