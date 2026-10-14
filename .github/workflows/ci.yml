@@ -1,6 +1,7 @@
 # Testes a cada push e PR; em main, publica as imagens no GitHub Container Registry.
 #   ghcr.io/fomo-veritai/veritai-ponte  (amd64 e arm64) - ponte FOMO → SageMaker, usada no k3s
 #   ghcr.io/fomo-veritai/veritai        (amd64)         - serviço completo, sem modelos dentro
+#   ghcr.io/fomo-veritai/fomo-completo  (amd64)         - API do FOMO + VeritAI interna (k8s local)
 # A imagem do SageMaker vai para o ECR pelo deploy/aws/implantar.py, não por aqui.
 name: CI
 
@@ -34,6 +35,9 @@ jobs:
       contents: read
       packages: write
     steps:
+      # Três imagens com torch e modelos não cabem no disco padrão do runner.
+      - name: Liberar espaço
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -65,3 +69,15 @@ jobs:
             ghcr.io/fomo-veritai/veritai:${{ github.sha }}
           cache-from: type=gha,scope=veritai
           cache-to: type=gha,mode=max,scope=veritai
+      - name: FOMO completo (Kubernetes local)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/fomo-completo/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/fomo-veritai/fomo-completo:main
+            ghcr.io/fomo-veritai/fomo-completo:${{ github.sha }}
+          cache-from: type=gha,scope=fomo-completo
+          cache-to: type=gha,mode=max,scope=fomo-completo

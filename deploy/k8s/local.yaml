@@ -1,0 +1,166 @@
+# FOMO + VeritAI no Kubernetes local (Docker Desktop ou k3s), sem nuvem e sem custo.
+# Mesma imagem (deploy/fomo-completo/Dockerfile) em dois Deployments: veritai e fomo-api.
+# O jeito simples é o script deploy/demo-local.ps1, que faz tudo abaixo e abre o túnel. À mão:
+#   kubectl apply -f deploy/k8s/local.yaml
+#   kubectl -n fomo-local create secret generic fomo-chaves \
+#     --from-literal=TAKTA_PUBLISHER_KEY=<chave> --from-literal=TAKTA_REVIEWER_KEY=<chave>
+#   kubectl -n fomo-local port-forward svc/fomo-api 8000:8000      # API em http://127.0.0.1:8000
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fomo-local
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: veritai
+  namespace: fomo-local
+  labels: {app: veritai}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: veritai}
+  template:
+    metadata:
+      labels: {app: veritai}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: veritai
+          image: ghcr.io/fomo-veritai/fomo-completo:main
+          command: [uvicorn, veritai.api:app, --host, 0.0.0.0, --port, "8100"]
+          env:
+            - {name: HF_HUB_OFFLINE, value: "1"}
+          ports:
+            - containerPort: 8100
+          readinessProbe:
+            httpGet: {path: /health, port: 8100}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: 8100}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 250m, memory: 1Gi}
+            limits: {cpu: "2", memory: 3Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: veritai
+  namespace: fomo-local
+spec:
+  selector: {app: veritai}
+  ports:
+    - port: 8100
+      targetPort: 8100
+---
+# A API da VeritAI não tem autenticação: só o FOMO a alcança.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: veritai-so-do-fomo
+  namespace: fomo-local
+spec:
+  podSelector:
+    matchLabels: {app: veritai}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: fomo-api}
+      ports:
+        - port: 8100
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fomo-dados
+  namespace: fomo-local
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fomo-api
+  namespace: fomo-local
+  labels: {app: fomo-api}
+spec:
+  replicas: 1
+  # SQLite num volume ReadWriteOnce: nunca dois pods ao mesmo tempo.
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: fomo-api}
+  template:
+    metadata:
+      labels: {app: fomo-api}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: api
+          image: ghcr.io/fomo-veritai/fomo-completo:main
+          command: [uvicorn, backend.app.main:app, --host, 0.0.0.0, --port, "8000"]
+          ports:
+            - containerPort: 8000
+          env:
+            - {name: VERITAI_URL, value: "http://veritai:8100"}
+            - {name: FOMO_CORS_ORIGINS, value: "https://fomo-veritai.github.io"}
+          envFrom:
+            - secretRef: {name: fomo-chaves}
+          readinessProbe:
+            httpGet: {path: /health, port: 8000}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: 8000}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: dados, mountPath: /app/backend/data}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: dados
+          persistentVolumeClaim: {claimName: fomo-dados}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fomo-api
+  namespace: fomo-local
+spec:
+  selector: {app: fomo-api}
+  ports:
+    - port: 8000
+      targetPort: 8000

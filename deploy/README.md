@@ -1,4 +1,56 @@
-# Deploy na AWS: SageMaker + Kubernetes (k3s)
+# Deploy
+
+Há dois caminhos. O **gratuito** é o usado pelo grupo. A **AWS** está pronta, mas não foi implantada, porque gera custo no cartão.
+
+# Caminho gratuito: Kubernetes local + túnel do Cloudflare
+
+```
+GitHub Pages (frontend do FOMO e site de embeddings)
+        │ HTTPS
+        ▼
+Túnel grátis do Cloudflare  https://<aleatório>.trycloudflare.com  (sem conta, sem cartão)
+        │
+        ▼
+Seu PC: Kubernetes do Docker Desktop, namespace fomo-local
+        ├─ fomo-api  (API do FOMO, SQLite em volume)
+        └─ veritai   (só dentro do cluster; perfil v0, modelos na imagem)
+```
+
+- **Imagem:** `deploy/fomo-completo/Dockerfile` junta o backend do FOMO, num commit fixo do repositório `fomo`, e a VeritAI. O CI publica a imagem `ghcr.io/fomo-veritai/fomo-completo` a cada push no `main`. No Kubernetes, ela roda em dois Deployments.
+- **Exposição:** a VeritAI não tem autenticação. Rodando a imagem sozinha, ela escuta só em `127.0.0.1`. No Kubernetes, escuta no pod e só é alcançável dentro do cluster, pelo Service interno; outros pods do cluster a alcançam onde a NetworkPolicy não é aplicada. O túnel expõe só a API do FOMO, que exige as chaves do publisher e do revisor. O contrato não muda.
+- **Script:** `deploy/demo-local.ps1` faz tudo com um comando.
+
+**Limites (é grátis, mas roda no seu PC)**
+- **Disponibilidade:** o FOMO só fica online enquanto o PC estiver ligado e o script aberto.
+- **Endereço:** o do túnel muda a cada execução. Com `-AtualizarFrontend`, o script grava o endereço novo no repositório `fomo` e publica o frontend de novo, o que leva uns 2 minutos.
+- **Túnel rápido:** o `trycloudflare.com` é o modo de teste do Cloudflare, sem garantia de disponibilidade. Serve para demonstração.
+- **Acesso pela URL:** quem tiver a URL do túnel alcança a API do FOMO, como numa hospedagem pública. O feed de notícias aprovadas e o `/health` são abertos; publicar e revisar exigem as chaves.
+- **Dados:** as notícias ficam num volume do cluster e só somem com `-Apagar` ou se o Kubernetes for reiniciado do zero.
+- **NetworkPolicy:** o Kubernetes padrão do Docker Desktop não aplica NetworkPolicy. Mesmo assim, a VeritAI fica restrita ao cluster, porque o Service é interno. Num k3s, a política também é aplicada; já foi testada assim.
+
+## Passo a passo
+
+1. **Kubernetes:** no Docker Desktop, ative **Settings → Kubernetes → Enable Kubernetes** e espere ficar verde.
+2. **Túnel:** instale o cloudflared com `winget install Cloudflare.cloudflared` e abra um terminal novo.
+3. **Imagem:** em github.com/orgs/FOMO-veritAI/packages, deixe o pacote `fomo-completo` **Public**. Ou construa a imagem no seu PC, que o Docker Desktop usa direto:
+
+   ```powershell
+   docker build -f deploy/fomo-completo/Dockerfile -t ghcr.io/fomo-veritai/fomo-completo:main .
+   ```
+
+4. **Subir** (na pasta do veritai):
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File deploy\demo-local.ps1 -AtualizarFrontend
+   ```
+
+   Na primeira vez, o script gera as chaves e as guarda só no cluster. Para vê-las, use `-MostrarChaves`.
+5. **Usar:** abra `https://fomo-veritai.github.io/fomo/` depois que o workflow do Pages do `fomo` terminar.
+6. **Encerrar:** Ctrl+C na janela do script. Para apagar tudo, inclusive as notícias, use `-Apagar`.
+
+Sem túnel, só no seu PC, use `-SemTunel`: a API fica em `http://127.0.0.1:8000`.
+
+# Caminho AWS: SageMaker + Kubernetes (k3s), não implantado
 
 ```
 GitHub Pages (frontend do FOMO)

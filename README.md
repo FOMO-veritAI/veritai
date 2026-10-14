@@ -23,7 +23,8 @@ A VeritAI recomenda e documenta. A decisão de publicar é sempre de um revisor 
 | Leitura de URLs com resolução de DNS única (conexão no IP validado, TLS pelo nome original) | Implementado |
 | Imagem de container (Dockerfile, docker-compose) | Implementado, validado localmente em arm64 e amd64 |
 | Modo SageMaker (`serve`, porta 8080, `/ping` e `/invocations`) e ponte FOMO → SageMaker assíncrono | Implementado e testado localmente; ainda não implantado na AWS |
-| Kubernetes (`deploy/k8s/`), CloudFormation e script de deploy na AWS (`deploy/aws/`) | Implementado e validado num k3s local e no `cfn-lint`; ainda não implantado na AWS |
+| Caminho gratuito: imagem `fomo-completo` (API do FOMO + VeritAI interna) no Kubernetes local (`deploy/k8s/local.yaml`), com túnel do Cloudflare (`deploy/demo-local.ps1`) | Implementado e testado num k3s local, inclusive pelo túnel |
+| Kubernetes na AWS (`deploy/k8s/fomo.yaml`), CloudFormation e script de deploy (`deploy/aws/`) | Implementado e validado num k3s local e no `cfn-lint`; não implantado, porque gera custo |
 | GitHub Actions: testes e imagens no GHCR | Implementado (`.github/workflows/ci.yml`) |
 | Site de embeddings no Embedding Projector do TensorFlow (`projetor/`) | Implementado e conferido localmente; a publicação no GitHub Pages (`.github/workflows/projetor.yml`) ainda não rodou |
 | PostgreSQL + pgvector, atualização de documentos na base | Planejado |
@@ -143,7 +144,9 @@ docker run --rm -p 127.0.0.1:8080:8080 -e HF_HUB_OFFLINE=1 veritai:sagemaker ser
 docker build --target ponte -t veritai-ponte .     # ponte FOMO → SageMaker, sem torch (extra aws)
 ```
 
-Na AWS, a VeritAI roda num endpoint **assíncrono**, porque o de tempo real corta em 60 s. Esse endpoint desliga quando não há pedidos. A API do FOMO roda num k3s numa EC2. A `veritai-ponte` (`veritai/ponte.py`), dentro do cluster, recebe o `POST /analisar` do FOMO, grava o pedido no S3, chama o endpoint e devolve o relatório. O contrato não muda. Arquitetura, custos e passo a passo estão em [`deploy/README.md`](deploy/README.md).
+**Caminho gratuito (o usado pelo grupo):** `deploy/fomo-completo/Dockerfile` junta a API do FOMO e a VeritAI numa imagem só. Rodando a imagem sozinha, a VeritAI escuta só em `127.0.0.1`. No Kubernetes do Docker Desktop (`deploy/k8s/local.yaml`), cada serviço vira um Deployment. Ali a VeritAI só é alcançável dentro do cluster, pelo Service interno. A NetworkPolicy, que limita o acesso ao FOMO, só vale em clusters que a aplicam, como o k3s. O script `deploy/demo-local.ps1` sobe tudo e abre um túnel grátis do Cloudflare (`https://....trycloudflare.com`). O FOMO fica online só enquanto o PC e o script estiverem ligados, e o endereço muda a cada execução.
+
+**Caminho AWS (pronto, não implantado, porque gera custo):** a VeritAI roda num endpoint **assíncrono**, porque o de tempo real corta em 60 s. Esse endpoint desliga quando não há pedidos. A API do FOMO roda num k3s numa EC2. A `veritai-ponte` (`veritai/ponte.py`), dentro do cluster, recebe o `POST /analisar` do FOMO, grava o pedido no S3, chama o endpoint e devolve o relatório. O contrato não muda. Arquitetura, custos e passo a passo estão em [`deploy/README.md`](deploy/README.md).
 
 ## Site de embeddings
 
