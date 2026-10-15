@@ -1,0 +1,190 @@
+# FOMO + VeritAI no Kubernetes (k3s): API do FOMO e ponte para a VeritAI no SageMaker.
+# Antes de aplicar, crie no namespace "fomo" (o user-data da EC2 já faz isso; veja deploy/README.md):
+#   Secret    fomo-chaves        TAKTA_PUBLISHER_KEY, TAKTA_REVIEWER_KEY
+#   Secret    veritai-ponte-aws  AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (usuário IAM só da ponte)
+#   ConfigMap veritai-aws        VERITAI_SAGEMAKER_ENDPOINT, VERITAI_S3_BUCKET, AWS_REGION
+# A ponte não tem Ingress: só a API do FOMO a alcança, pela rede interna do cluster.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fomo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: veritai-ponte
+  namespace: fomo
+  labels: {app: veritai-ponte}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: veritai-ponte}
+  template:
+    metadata:
+      labels: {app: veritai-ponte}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: ponte
+          image: ghcr.io/fomo-veritai/veritai-ponte:main
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8100
+          envFrom:
+            - configMapRef: {name: veritai-aws}
+            # Credencial só da ponte; os pods não alcançam o IMDS da EC2 (limite de 1 salto).
+            - secretRef: {name: veritai-ponte-aws}
+          env:
+            - {name: VERITAI_PONTE_ESPERA, value: "1200"}
+          readinessProbe:
+            httpGet: {path: /health, port: 8100}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: 8100}
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+# Nome "veritai": no cluster, o FOMO chama http://veritai:8100, como chamaria o serviço local.
+apiVersion: v1
+kind: Service
+metadata:
+  name: veritai
+  namespace: fomo
+spec:
+  selector: {app: veritai-ponte}
+  ports:
+    - port: 8100
+      targetPort: 8100
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: veritai-so-do-fomo
+  namespace: fomo
+spec:
+  podSelector:
+    matchLabels: {app: veritai-ponte}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: fomo-api}
+      ports:
+        - port: 8100
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fomo-dados
+  namespace: fomo
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fomo-api
+  namespace: fomo
+  labels: {app: fomo-api}
+spec:
+  replicas: 1
+  # SQLite num volume ReadWriteOnce: nunca dois pods ao mesmo tempo.
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: fomo-api}
+  template:
+    metadata:
+      labels: {app: fomo-api}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: api
+          image: ghcr.io/fomo-veritai/fomo-api:main
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          env:
+            - {name: VERITAI_MODO, value: servico}
+            - {name: VERITAI_URL, value: "http://veritai:8100"}
+            # Maior que a espera da ponte (1200 s), que inclui ligar o endpoint do SageMaker.
+            - {name: VERITAI_TIMEOUT, value: "1300"}
+            - {name: FOMO_CORS_ORIGINS, value: "https://fomo-veritai.github.io"}
+            - {name: TAKTA_DB_PATH, value: /app/backend/data/takta.sqlite3}
+          envFrom:
+            - secretRef: {name: fomo-chaves}
+          readinessProbe:
+            httpGet: {path: /health, port: 8000}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: 8000}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: dados, mountPath: /app/backend/data}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: dados
+          persistentVolumeClaim: {claimName: fomo-dados}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fomo-api
+  namespace: fomo
+spec:
+  selector: {app: fomo-api}
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+# Traefik (padrão do k3s) na porta 80 da EC2; o CloudFront põe HTTPS na frente.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fomo-api
+  namespace: fomo
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: fomo-api
+                port: {number: 8000}

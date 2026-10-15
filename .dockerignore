@@ -46,3 +46,10 @@ entrega/
 # Arquivos do próprio container
 docker-compose.yml
 .dockerignore
+
+# Deploy, CI e site de embeddings (fora da imagem)
+.github/
+deploy/
+projetor/
+_site/
+logs/

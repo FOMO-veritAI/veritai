@@ -31,6 +31,18 @@ treino = [
   "matplotlib>=3.9,<4",
   "jupyter>=1.1,<2",
 ]
+# Ponte para o SageMaker (veritai/ponte.py) e script de deploy em deploy/aws/.
+aws = ["boto3>=1.35,<2"]
+# Site de embeddings (projetor/): ASSIN 2 em parquet e logs para o TensorBoard.
+projetor = [
+  "pandas>=2.2,<4",
+  "pyarrow>=17",
+  "tensorboard>=2.18,<3",
+]
+
+[project.scripts]
+# O SageMaker inicia o container com `serve`.
+serve = "veritai.api:servir"
 
 [build-system]
 requires = ["setuptools>=69"]

@@ -23,8 +23,12 @@ A VeritAI recomenda e documenta. A decisão de publicar é sempre de um revisor 
 | Fontes independentes por grupo (mesmo domínio ou cópia quase literal) | Implementado |
 | Filtro de evidências pela data da notícia | Implementado |
 | Leitura de URLs com resolução de DNS única (conexão no IP validado, TLS pelo nome original) | Implementado |
-| Imagem de container (Dockerfile, docker-compose) | Implementado, validado localmente em arm64 |
-| Imagem oficial para nuvem (GitHub Actions), Kubernetes e AWS | Planejado |
+| Imagem de container (Dockerfile, docker-compose) | Implementado, validado localmente em arm64 e amd64 |
+| Modo SageMaker (`serve`, porta 8080, `/ping` e `/invocations`) e ponte FOMO → SageMaker assíncrono | Implementado e testado localmente; ainda não implantado na AWS |
+| Caminho gratuito: imagem `fomo-completo` (API do FOMO + VeritAI interna) no Kubernetes local (`deploy/k8s/local.yaml`), com túnel do Cloudflare (`deploy/demo-local.ps1`) | Implementado e testado num k3s local, inclusive pelo túnel |
+| Kubernetes na AWS (`deploy/k8s/fomo.yaml`), CloudFormation e script de deploy (`deploy/aws/`) | Implementado e validado num k3s local e no `cfn-lint`; não implantado, porque gera custo |
+| GitHub Actions: testes e imagens no GHCR | Implementado (`.github/workflows/ci.yml`) |
+| Site de embeddings no Embedding Projector do TensorFlow (`projetor/`) | Implementado e conferido localmente; a publicação no GitHub Pages (`.github/workflows/projetor.yml`) ainda não rodou |
 | PostgreSQL + pgvector, atualização de documentos na base | Planejado |
 | Modelo de relação trecho × afirmação treinado no ASSIN 2 (`modelo/`) | Implementado como experimento; não entra na API |
 | Modelo treinado V2 (XLM-RoBERTa ajustado) | Planejado, depende de dados rotulados |
@@ -130,7 +134,34 @@ docker compose restart veritai               # a API passa a usar a base (e exig
 docker buildx build --platform linux/amd64 -t veritai:amd64 --load .
 ```
 
-Em um Mac ARM, esse build é lento porque roda por emulação. A imagem oficial para a nuvem será construída depois no GitHub Actions. A AWS também oferece instâncias ARM (Graviton), que usam a imagem arm64.
+Em um Mac ARM, esse build é lento porque roda por emulação. No `main`, o GitHub Actions publica `ghcr.io/fomo-veritai/veritai` (amd64) e `ghcr.io/fomo-veritai/veritai-ponte` (amd64 e arm64).
+
+## Nuvem: SageMaker e Kubernetes
+
+A imagem também roda no SageMaker. O SageMaker inicia o container com `serve`, que sobe a mesma API na porta 8080. Nessa porta, `/ping` e `/invocations` fazem o mesmo que `/health` e `/analisar`.
+
+```bash
+docker build --build-arg PERFIL_EMBUTIDO=v0 -t veritai:sagemaker .
+docker run --rm -p 127.0.0.1:8080:8080 -e HF_HUB_OFFLINE=1 veritai:sagemaker serve
+docker build --target ponte -t veritai-ponte .     # ponte FOMO → SageMaker, sem torch (extra aws)
+```
+
+**Caminho gratuito (o usado pelo grupo):** `deploy/fomo-completo/Dockerfile` junta a API do FOMO e a VeritAI numa imagem só. Rodando a imagem sozinha, a VeritAI escuta só em `127.0.0.1`. No Kubernetes do Docker Desktop (`deploy/k8s/local.yaml`), cada serviço vira um Deployment. Ali a VeritAI só é alcançável dentro do cluster, pelo Service interno. A NetworkPolicy, que limita o acesso ao FOMO, só vale em clusters que a aplicam, como o k3s. O script `deploy/demo-local.ps1` sobe tudo e abre um túnel grátis do Cloudflare (`https://....trycloudflare.com`). O FOMO fica online só enquanto o PC e o script estiverem ligados, e o endereço muda a cada execução.
+
+**Caminho AWS (pronto, não implantado, porque gera custo):** a VeritAI roda num endpoint **assíncrono**, porque o de tempo real corta em 60 s. Esse endpoint desliga quando não há pedidos. A API do FOMO roda num k3s numa EC2. A `veritai-ponte` (`veritai/ponte.py`), dentro do cluster, recebe o `POST /analisar` do FOMO, grava o pedido no S3, chama o endpoint e devolve o relatório. O contrato não muda. Arquitetura, custos e passo a passo estão em [`deploy/README.md`](deploy/README.md).
+
+## Site de embeddings
+
+`projetor/gerar.py` monta um site com o [Embedding Projector](https://github.com/tensorflow/embedding-projector-standalone) do TensorFlow, o mesmo do projector.tensorflow.org. Os vetores são os do serviço (`ModelosHF.vetorizar`, perfis v0 e v1), calculados sobre 1.500 pares do ASSIN 2 e sobre o conjunto de contraste.
+
+```bash
+.venv/bin/python -m pip install -e ".[modelos,projetor]"
+.venv/bin/python projetor/gerar.py --saida _site --tensorboard logs/projetor
+.venv/bin/python -m http.server 8765 --directory _site       # http://127.0.0.1:8765
+.venv/bin/python -m tensorboard.main --logdir logs/projetor  # mesma visualização no TensorBoard
+```
+
+Depois do push no `main` e com o Pages ativado no repositório, o workflow `projetor.yml` publica o site em `https://fomo-veritai.github.io/veritai/`. A página da versão de demonstração do Google tem Google Analytics, e ele é retirado do site.
 
 ## Avaliação
 
@@ -194,7 +225,8 @@ Comandos, esquema do banco e limitações estão em [`veritai/base/README.md`](v
 
 ```text
 veritai/
-├── api.py         API HTTP
+├── api.py         API HTTP (também no modo SageMaker: comando serve)
+├── ponte.py       ponte FOMO → endpoint assíncrono do SageMaker
 ├── pipeline.py    orquestra a análise e monta o relatório
 ├── fontes.py      descoberta e leitura de fontes públicas
 ├── modelos.py     comparação por similaridade e NLI
@@ -206,7 +238,9 @@ veritai/
 └── config.json    perfis de modelo, seleção e limiares versionados
 eval/              script de avaliação e conjunto de contraste
 modelo/            notebook de treino e avaliação do modelo de relação (ASSIN 2)
-tests/             testes do pipeline, da API, da base e da avaliação
+deploy/            Kubernetes (k8s/), CloudFormation e script de deploy na AWS (aws/)
+projetor/          site de embeddings no Embedding Projector do TensorFlow
+tests/             testes do pipeline, da API, da ponte, da base e da avaliação
 ```
 
 ## Princípios

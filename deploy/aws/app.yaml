@@ -1,0 +1,337 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  VeritAI/FOMO - aplicação: VeritAI num endpoint assíncrono do SageMaker (escala até zero), k3s numa EC2
+  com a API do FOMO e a ponte para o SageMaker, e CloudFront com HTTPS na frente da API.
+
+Parameters:
+  Bucket:
+    Type: String
+    Description: Bucket da pilha base (saída "Bucket").
+  TagImagem:
+    Type: String
+    Description: Tag da imagem veritai no ECR (enviada por implantar.py imagem).
+  TipoInstanciaSageMaker:
+    Type: String
+    Default: ml.m5.large
+  TipoInstanciaEC2:
+    Type: String
+    Default: t3.medium
+  PrefixoCloudFront:
+    Type: String
+    Description: Lista de prefixos gerenciada com.amazonaws.global.cloudfront.origin-facing (implantar.py busca).
+  RefManifests:
+    Type: String
+    Default: main
+    Description: Branch, tag ou commit do repositório veritai com deploy/k8s/fomo.yaml.
+  ImagemEC2:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Conditions:
+  UsEast1: !Equals [!Ref "AWS::Region", us-east-1]
+
+Resources:
+  # --- VeritAI no SageMaker ---------------------------------------------------------------------
+  PapelSageMaker:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - {Effect: Allow, Principal: {Service: sagemaker.amazonaws.com}, Action: "sts:AssumeRole"}
+      Policies:
+        - PolicyName: veritai-sagemaker
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - {Effect: Allow, Action: "ecr:GetAuthorizationToken", Resource: "*"}
+              - Effect: Allow
+                Action: [ecr:BatchCheckLayerAvailability, ecr:GetDownloadUrlForLayer, ecr:BatchGetImage]
+                Resource: !Sub "arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/veritai"
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents, logs:DescribeLogStreams]
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/sagemaker/*"
+              - {Effect: Allow, Action: "cloudwatch:PutMetricData", Resource: "*"}
+              - Effect: Allow
+                Action: s3:GetBucketLocation
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${Bucket}"
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${Bucket}"
+                Condition:
+                  StringLike: {"s3:prefix": "veritai/*"}
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${Bucket}/veritai/entradas/*"
+              - Effect: Allow
+                Action: [s3:PutObject, s3:AbortMultipartUpload]
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${Bucket}/veritai/saidas/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${Bucket}/veritai/falhas/*"
+
+  Modelo:
+    Type: AWS::SageMaker::Model
+    Properties:
+      ExecutionRoleArn: !GetAtt PapelSageMaker.Arn
+      PrimaryContainer:
+        Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/veritai:${TagImagem}"
+        Environment:
+          VERITAI_PERFIL: v0
+          # Os modelos v0 estão dentro da imagem; nada é baixado do Hugging Face no endpoint.
+          HF_HUB_OFFLINE: "1"
+
+  ConfigEndpoint:
+    Type: AWS::SageMaker::EndpointConfig
+    Properties:
+      ProductionVariants:
+        - VariantName: AllTraffic
+          ModelName: !GetAtt Modelo.ModelName
+          InitialInstanceCount: 1
+          InstanceType: !Ref TipoInstanciaSageMaker
+          ContainerStartupHealthCheckTimeoutInSeconds: 600
+      # Assíncrono: sem o limite de 60 s do tempo real, e a instância pode ir a zero sem pedidos.
+      AsyncInferenceConfig:
+        ClientConfig: {MaxConcurrentInvocationsPerInstance: 2}
+        OutputConfig:
+          S3OutputPath: !Sub "s3://${Bucket}/veritai/saidas"
+          S3FailurePath: !Sub "s3://${Bucket}/veritai/falhas"
+
+  Endpoint:
+    Type: AWS::SageMaker::Endpoint
+    Properties:
+      EndpointName: veritai-v0
+      EndpointConfigName: !GetAtt ConfigEndpoint.EndpointConfigName
+
+  EscalaEndpoint:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    DependsOn: Endpoint
+    Properties:
+      ServiceNamespace: sagemaker
+      ResourceId: endpoint/veritai-v0/variant/AllTraffic
+      ScalableDimension: sagemaker:variant:DesiredInstanceCount
+      MinCapacity: 0
+      MaxCapacity: 1
+
+  # Fila vazia por uns 15 min: a instância desliga.
+  EscalaPelaFila:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: veritai-fila
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref EscalaEndpoint
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 2
+        ScaleInCooldown: 600
+        ScaleOutCooldown: 60
+        CustomizedMetricSpecification:
+          MetricName: ApproximateBacklogSizePerInstance
+          Namespace: AWS/SageMaker
+          Statistic: Average
+          Dimensions: [{Name: EndpointName, Value: veritai-v0}]
+
+  # Com zero instâncias, um pedido na fila liga uma.
+  LigarDoZero:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: veritai-ligar-do-zero
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref EscalaEndpoint
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 300
+        MetricAggregationType: Average
+        StepAdjustments: [{MetricIntervalLowerBound: 0, ScalingAdjustment: 1}]
+
+  AlarmeFilaSemInstancia:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Pedido na fila da VeritAI sem instância ligada.
+      Namespace: AWS/SageMaker
+      MetricName: HasBacklogWithoutCapacity
+      Dimensions: [{Name: EndpointName, Value: veritai-v0}]
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: missing
+      AlarmActions: [!Ref LigarDoZero]
+
+  # --- Chaves do FOMO (geradas aqui; ninguém as digita) --------------------------------------------
+  ChavePublisher:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Chave do publisher do FOMO
+      GenerateSecretString: {PasswordLength: 40, ExcludePunctuation: true}
+
+  ChaveRevisor:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Chave do revisor do FOMO
+      GenerateSecretString: {PasswordLength: 40, ExcludePunctuation: true}
+
+  # --- Credencial só da ponte ------------------------------------------------------------------------
+  # Os pods não alcançam o IMDS da EC2 (limite de 1 salto, abaixo). A ponte usa este usuário, com o mínimo
+  # para chamar o endpoint; a chave vai num Secret do Kubernetes montado só no pod da ponte.
+  UsuarioPonte:
+    Type: AWS::IAM::User
+    Properties:
+      Policies:
+        - PolicyName: veritai-ponte
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sagemaker:InvokeEndpointAsync
+                Resource: !Sub "arn:${AWS::Partition}:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/veritai-v0"
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${Bucket}/veritai/entradas/*"
+              - Effect: Allow
+                Action: [s3:GetObject, s3:DeleteObject]
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${Bucket}/veritai/*"
+              # A ponte confere se a saída chegou listando o próprio prefixo (veritai/ponte.py: ler_se_existir).
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${Bucket}"
+                Condition:
+                  StringLike: {"s3:prefix": "veritai/*"}
+
+  ChavePonte:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref UsuarioPonte
+
+  SegredoPonte:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Chave de acesso da veritai-ponte
+      SecretString: !Sub '{"AWS_ACCESS_KEY_ID": "${ChavePonte}", "AWS_SECRET_ACCESS_KEY": "${ChavePonte.SecretAccessKey}"}'
+
+  # --- EC2 com k3s ---------------------------------------------------------------------------------
+  # O papel da instância só serve ao boot (ler os segredos) e ao Session Manager; nenhum pod o alcança.
+  PapelEC2:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - {Effect: Allow, Principal: {Service: ec2.amazonaws.com}, Action: "sts:AssumeRole"}
+      # Acesso ao terminal pelo Session Manager, sem SSH nem porta 22 aberta.
+      ManagedPolicyArns: [!Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"]
+      Policies:
+        - PolicyName: fomo-boot
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: [!Ref ChavePublisher, !Ref ChaveRevisor, !Ref SegredoPonte]
+
+  PerfilEC2:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref PapelEC2]
+
+  GrupoSeguranca:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: FOMO k3s - porta 80 so para o CloudFront
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 80, ToPort: 80, SourcePrefixListId: !Ref PrefixoCloudFront}
+
+  ModeloEC2:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        # IMDSv2 com limite de 1 salto: o token não chega a nenhum container, só ao próprio host.
+        MetadataOptions: {HttpTokens: required, HttpPutResponseHopLimit: 1, HttpEndpoint: enabled, HttpProtocolIpv6: disabled}
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs: {VolumeSize: 30, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true}
+
+  Instancia:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref ImagemEC2
+      InstanceType: !Ref TipoInstanciaEC2
+      IamInstanceProfile: !Ref PerfilEC2
+      SecurityGroupIds: [!GetAtt GrupoSeguranca.GroupId]
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ModeloEC2
+        Version: !GetAtt ModeloEC2.LatestVersionNumber
+      Tags: [{Key: Name, Value: fomo-k3s}]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Sem "set -x": o log do cloud-init não pode conter as chaves.
+          set -euo pipefail
+          curl -sfL https://get.k3s.io | INSTALL_K3S_CHANNEL=stable sh -s - --write-kubeconfig-mode 600
+          K="/usr/local/bin/k3s kubectl"
+          for i in $(seq 1 60); do $K get nodes 2>/dev/null | grep -q " Ready" && break; sleep 5; done
+          $K apply -f "https://raw.githubusercontent.com/FOMO-veritAI/veritai/${RefManifests}/deploy/k8s/fomo.yaml"
+          umask 077
+          PUB=$(aws secretsmanager get-secret-value --region ${AWS::Region} --secret-id ${ChavePublisher} --query SecretString --output text)
+          REV=$(aws secretsmanager get-secret-value --region ${AWS::Region} --secret-id ${ChaveRevisor} --query SecretString --output text)
+          printf 'TAKTA_PUBLISHER_KEY=%s\nTAKTA_REVIEWER_KEY=%s\n' "$PUB" "$REV" > /root/chaves.env
+          $K -n fomo create secret generic fomo-chaves --from-env-file=/root/chaves.env --dry-run=client -o yaml | $K apply -f -
+          rm -f /root/chaves.env
+          aws secretsmanager get-secret-value --region ${AWS::Region} --secret-id ${SegredoPonte} --query SecretString --output text \
+            | python3 -c 'import json, sys; [print(k + "=" + v) for k, v in json.load(sys.stdin).items()]' > /root/ponte.env
+          $K -n fomo create secret generic veritai-ponte-aws --from-env-file=/root/ponte.env --dry-run=client -o yaml | $K apply -f -
+          rm -f /root/ponte.env
+          $K -n fomo create configmap veritai-aws \
+            --from-literal=VERITAI_SAGEMAKER_ENDPOINT=veritai-v0 \
+            --from-literal=VERITAI_S3_BUCKET=${Bucket} \
+            --from-literal=AWS_REGION=${AWS::Region} \
+            --from-literal=AWS_DEFAULT_REGION=${AWS::Region} \
+            --dry-run=client -o yaml | $K apply -f -
+
+  # IP fixo: o endereço do CloudFront para a EC2 não muda quando ela é desligada e religada.
+  IpFixo:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref Instancia
+
+  # --- HTTPS sem domínio próprio: https://xxxx.cloudfront.net --------------------------------------
+  Distribuicao:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: API do FOMO (k3s)
+        PriceClass: PriceClass_100
+        HttpVersion: http2
+        Origins:
+          - Id: k3s
+            DomainName: !If
+              - UsEast1
+              - !Sub
+                - "ec2-${Ip}.compute-1.amazonaws.com"
+                - Ip: !Join ["-", !Split [".", !Ref IpFixo]]
+              - !Sub
+                - "ec2-${Ip}.${AWS::Region}.compute.amazonaws.com"
+                - Ip: !Join ["-", !Split [".", !Ref IpFixo]]
+            CustomOriginConfig: {OriginProtocolPolicy: http-only, HTTPPort: 80, OriginReadTimeout: 60}
+        DefaultCacheBehavior:
+          TargetOriginId: k3s
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          # Políticas gerenciadas: CachingDisabled e AllViewerExceptHostHeader (repassa Origin e as chaves).
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+
+Outputs:
+  UrlApi:
+    Description: Endereço público da API do FOMO (use em FOMO_API_URL)
+    Value: !Sub "https://${Distribuicao.DomainName}"
+  Instancia:
+    Value: !Ref Instancia
+  Endpoint:
+    Value: veritai-v0
+  ChavePublisher:
+    Value: !Ref ChavePublisher
+  ChaveRevisor:
+    Value: !Ref ChaveRevisor

@@ -1,0 +1,85 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  VeritAI/FOMO - base: alerta de orçamento, repositório ECR da imagem do SageMaker e bucket S3 dos
+  pedidos assíncronos. Criada antes da imagem e da pilha da aplicação (app.yaml).
+
+Parameters:
+  EmailAlerta:
+    Type: String
+    Description: E-mail que recebe os alertas de orçamento.
+    AllowedPattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+  OrcamentoMensalUSD:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    Description: Limite mensal em dólares; alerta em 50%, 80% e 100% do gasto real e em 100% da previsão.
+
+Resources:
+  Orcamento:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub "${AWS::StackName}-mensal"
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: {Amount: !Ref OrcamentoMensalUSD, Unit: USD}
+      NotificationsWithSubscribers:
+        - Notification: {NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 50, ThresholdType: PERCENTAGE}
+          Subscribers: [{SubscriptionType: EMAIL, Address: !Ref EmailAlerta}]
+        - Notification: {NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE}
+          Subscribers: [{SubscriptionType: EMAIL, Address: !Ref EmailAlerta}]
+        - Notification: {NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE}
+          Subscribers: [{SubscriptionType: EMAIL, Address: !Ref EmailAlerta}]
+        - Notification: {NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE}
+          Subscribers: [{SubscriptionType: EMAIL, Address: !Ref EmailAlerta}]
+
+  Repositorio:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: veritai
+      ImageScanningConfiguration: {ScanOnPush: true}
+      ImageTagMutability: MUTABLE
+      EmptyOnDelete: true
+      LifecyclePolicy:
+        LifecyclePolicyText: >-
+          {"rules": [{"rulePriority": 1, "description": "Guarda só as 3 imagens mais recentes",
+          "selection": {"tagStatus": "any", "countType": "imageCountMoreThan", "countNumber": 3},
+          "action": {"type": "expire"}}]}
+
+  Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ObjectOwnership: BucketOwnerEnforced}]
+      # Pedidos trazem o texto das notícias: a ponte apaga depois de ler, e o que sobrar expira em 1 dia.
+      LifecycleConfiguration:
+        Rules:
+          - {Id: expira-pedidos, Status: Enabled, Prefix: veritai/, ExpirationInDays: 1}
+
+  SoHttps:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Bucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: SoHttps
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!GetAtt Bucket.Arn, !Sub "${Bucket.Arn}/*"]
+            Condition: {Bool: {"aws:SecureTransport": "false"}}
+
+Outputs:
+  Bucket:
+    Value: !Ref Bucket
+  Repositorio:
+    Value: !GetAtt Repositorio.RepositoryUri
